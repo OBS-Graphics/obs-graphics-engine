@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
-project(engine)
+project(obs-graphics-engine)
 
-include(${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/CPM.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/CPM.cmake)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PANGOCAIRO REQUIRED pangocairo)
