@@ -38,3 +38,71 @@ jobs:
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$(brew --prefix)"
           cmake --build build --parallel
+
+  build-windows:
+    name: Build (Windows / MSYS2)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-pkg-config
+            mingw-w64-x86_64-meson
+            mingw-w64-x86_64-python
+            mingw-w64-x86_64-lua
+            mingw-w64-x86_64-pixman
+            mingw-w64-x86_64-freetype
+            mingw-w64-x86_64-fontconfig
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-libpng
+            mingw-w64-x86_64-glib2
+            mingw-w64-x86_64-harfbuzz
+            mingw-w64-x86_64-fribidi
+
+      - name: Cache Cairo/Pango builds
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: C:/deps
+          key: cairo-1.18.4-pango-1.56.3-mingw64-v1
+
+      - name: Build Cairo from source
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          curl -sLO https://cairographics.org/releases/cairo-1.18.4.tar.xz
+          tar xf cairo-1.18.4.tar.xz
+          meson setup _build_cairo cairo-1.18.4 \
+            --prefix=/c/deps --buildtype=release \
+            -Dtests=disabled \
+            -Dxlib=disabled \
+            -Dxcb=disabled
+          ninja -C _build_cairo install
+
+      - name: Build Pango from source
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        env:
+          PKG_CONFIG_PATH: /c/deps/lib/pkgconfig
+        run: |
+          curl -sLO https://download.gnome.org/sources/pango/1.56/pango-1.56.3.tar.xz
+          tar xf pango-1.56.3.tar.xz
+          meson setup _build_pango pango-1.56.3 \
+            --prefix=/c/deps --buildtype=release \
+            -Dintrospection=disabled
+          ninja -C _build_pango install
+
+      - name: Build
+        env:
+          PKG_CONFIG_PATH: /c/deps/lib/pkgconfig
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
