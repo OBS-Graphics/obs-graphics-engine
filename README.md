@@ -1,6 +1,6 @@
 # obs-graphics-engine
 
-Cairo/Pango rendering engine for animated broadcast graphics. A static C++20 library used by both the [obs-graphics](https://github.com/diegolopes/obs-graphics) OBS plugin and the [obs-graphics-editor](https://github.com/diegolopes/obs-graphics-editor) standalone editor.
+Cairo/Pango rendering engine for animated broadcast graphics. A static C++20 library used by both the [obs-graphics](https://github.com/OBS-Graphics/obs-graphics) OBS plugin and the [obs-graphics-editor](https://github.com/OBS-Graphics/obs-graphics-editor) standalone editor.
 
 ## Dependencies
 
