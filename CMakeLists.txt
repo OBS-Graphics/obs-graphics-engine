@@ -41,31 +41,39 @@ CPMAddPackage(
     DOWNLOAD_ONLY YES
 )
 if(lua_ADDED)
-    file(GLOB lua_SOURCES "${lua_SOURCE_DIR}/*.c")
-    list(FILTER lua_SOURCES EXCLUDE REGEX ".*(lua|luac)\\.c$")
-    add_library(lua_lib ${lua_SOURCES})
-    target_include_directories(lua_lib PUBLIC "${lua_SOURCE_DIR}")
-    if(UNIX)
-        target_compile_definitions(lua_lib PUBLIC LUA_USE_POSIX)
-    endif()
-    if(WIN32)
-        target_compile_definitions(lua_lib PRIVATE LUA_BUILD_AS_DLL)
-    endif()
+    FILE(GLOB lua_sources ${lua_SOURCE_DIR}/*.c)
+    list(REMOVE_ITEM lua_sources "${lua_SOURCE_DIR}/lua.c" "${lua_SOURCE_DIR}/luac.c")
+    add_library(lua STATIC ${lua_sources})
+
+    target_include_directories(lua
+    PUBLIC
+        $<BUILD_INTERFACE:${lua_SOURCE_DIR}>
+    )
 endif()
 
 CPMAddPackage(
     NAME sol2
     GITHUB_REPOSITORY ThePhD/sol2
     GIT_TAG v3.3.0
-    OPTIONS "SOL2_ENABLE_INSTALL OFF"
+    DOWNLOAD_ONLY YES
 )
 
+if (sol2_ADDED)
+  add_library(sol2 INTERFACE IMPORTED)
+  target_include_directories(sol2 INTERFACE ${sol2_SOURCE_DIR}/include)
+  target_link_libraries(sol2 INTERFACE lua)
+endif()
+
 CPMAddPackage(
-    NAME nlohmann_json
-    GITHUB_REPOSITORY nlohmann/json
-    GIT_TAG v3.11.3
-    OPTIONS "JSON_Install OFF" "JSON_BuildTests OFF"
+  NAME nlohmann_json
+  URL https://github.com/nlohmann/json/releases/download/v3.12.0/include.zip
+  DOWNLOAD_ONLY YES
 )
+
+if (nlohmann_json_ADDED)
+  add_library(nlohmann_json INTERFACE IMPORTED)
+  target_include_directories(nlohmann_json INTERFACE ${nlohmann_json_SOURCE_DIR}/include)
+endif()
 
 add_library(engine STATIC
     element.cpp
@@ -81,9 +89,9 @@ target_include_directories(engine PUBLIC
 )
 
 target_link_libraries(engine PUBLIC
-    sol2::sol2
-    nlohmann_json::nlohmann_json
-    lua_lib
+    sol2
+    nlohmann_json
+    lua
 )
 
 if(WIN32)
