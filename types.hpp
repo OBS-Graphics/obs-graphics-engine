@@ -1,6 +1,10 @@
 #pragma once
 
+#ifdef __APPLE__
+#include <cairo.h>
+#else
 #include <cairo/cairo.h>
+#endif
 #include <cmath>
 #include <vector>
 
