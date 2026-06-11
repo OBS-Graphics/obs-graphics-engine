@@ -1,0 +1,25 @@
+name: Build (Linux)
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build-ubuntu:
+    name: Build (Ubuntu)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build pkg-config \
+            libcairo2-dev libpango1.0-dev liblua5.4-dev
+
+      - name: Build
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel

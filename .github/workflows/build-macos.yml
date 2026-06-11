@@ -1,0 +1,22 @@
+name: Build (macOS)
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build-macos:
+    name: Build (macOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install cairo pango lua pkg-config ninja
+
+      - name: Build
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix)"
+          cmake --build build --parallel

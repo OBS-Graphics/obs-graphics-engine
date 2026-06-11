@@ -1,6 +1,7 @@
 #include "script.h"
 
 #include <iostream>
+#include <optional>
 
 ScriptDataSource::ScriptDataSource(const std::string& path)
     : scriptFilePath(path)
