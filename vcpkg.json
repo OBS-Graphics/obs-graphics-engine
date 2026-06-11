@@ -2,7 +2,7 @@
   "dependencies": [
     "cairo",
     "pango",
-    "lua",
+    "harfbuzz",
     "pkgconf"
   ]
 }

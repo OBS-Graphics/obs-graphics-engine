@@ -1,6 +1,6 @@
 #include "scene.h"
 
-#include "json.hpp"
+#include <nlohmann/json.hpp>
 #include <fstream>
 
 // ── JSON loading ─────────────────────────────────────────────────────────────
