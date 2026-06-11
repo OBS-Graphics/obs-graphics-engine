@@ -23,13 +23,14 @@ if(WIN32)
     find_package(Lua REQUIRED)
     set(LUA_INCLUDE_DIRS ${LUA_INCLUDE_DIR})
 else()
+    # macOS / Linux: use pkg-config via IMPORTED_TARGET so keg-only Homebrew
+    # packages (lua@5.4) get their library search dirs automatically.
     find_package(PkgConfig REQUIRED)
-    pkg_check_modules(PANGOCAIRO REQUIRED pangocairo)
-    pkg_check_modules(CAIRO REQUIRED cairo)
-
-    pkg_check_modules(LUA lua5.4)
+    pkg_check_modules(PANGOCAIRO REQUIRED IMPORTED_TARGET pangocairo)
+    pkg_check_modules(CAIRO REQUIRED IMPORTED_TARGET cairo)
+    pkg_check_modules(LUA IMPORTED_TARGET lua5.4)
     if(NOT LUA_FOUND)
-        pkg_check_modules(LUA REQUIRED lua)
+        pkg_check_modules(LUA REQUIRED IMPORTED_TARGET lua)
     endif()
 endif()
 
@@ -49,26 +50,35 @@ add_library(engine STATIC
     script.cpp
 )
 
+# Common include dirs for all platforms
 target_include_directories(engine PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/..
-    ${PANGOCAIRO_INCLUDE_DIRS}
-    ${CAIRO_INCLUDE_DIRS}
-    ${LUA_INCLUDE_DIRS}
     ${sol2_SOURCE_DIR}/include
 )
 
-target_link_libraries(engine PUBLIC
-    ${PANGOCAIRO_LIBRARIES}
-    ${CAIRO_LIBRARIES}
-    ${LUA_LIBRARIES}
-)
-
-target_compile_options(engine PRIVATE
-    ${PANGOCAIRO_CFLAGS_OTHER}
-    ${CAIRO_CFLAGS_OTHER}
-)
-if(NOT WIN32)
-    target_compile_options(engine PRIVATE -fPIC)
+if(WIN32)
+    target_include_directories(engine PUBLIC
+        ${PANGOCAIRO_INCLUDE_DIRS}
+        ${CAIRO_INCLUDE_DIRS}
+        ${LUA_INCLUDE_DIRS}
+    )
+    target_link_libraries(engine PUBLIC
+        ${PANGOCAIRO_LIBRARIES}
+        ${CAIRO_LIBRARIES}
+        ${LUA_LIBRARIES}
+    )
+else()
+    # IMPORTED_TARGET handles include dirs, library dirs, and link flags
+    target_link_libraries(engine PUBLIC
+        PkgConfig::PANGOCAIRO
+        PkgConfig::CAIRO
+        PkgConfig::LUA
+    )
+    target_compile_options(engine PRIVATE
+        ${PANGOCAIRO_CFLAGS_OTHER}
+        ${CAIRO_CFLAGS_OTHER}
+        -fPIC
+    )
 endif()
 
 target_compile_definitions(engine PRIVATE SOL_NO_THREAD_LOCAL)
