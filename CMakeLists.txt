@@ -54,7 +54,7 @@ endif()
 CPMAddPackage(
     NAME sol2
     GITHUB_REPOSITORY ThePhD/sol2
-    GIT_TAG v3.3.0
+    GIT_TAG v3.5.0
     DOWNLOAD_ONLY YES
 )
 
