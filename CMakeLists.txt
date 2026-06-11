@@ -7,7 +7,10 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(PANGOCAIRO REQUIRED pangocairo)
 pkg_check_modules(CAIRO REQUIRED cairo)
 
-find_package(Lua REQUIRED)
+pkg_check_modules(LUA lua5.4)
+if(NOT LUA_FOUND)
+    pkg_check_modules(LUA REQUIRED lua)
+endif()
 
 CPMAddPackage(
     NAME sol2
@@ -29,7 +32,7 @@ target_include_directories(engine PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/..
     ${PANGOCAIRO_INCLUDE_DIRS}
     ${CAIRO_INCLUDE_DIRS}
-    ${LUA_INCLUDE_DIR}
+    ${LUA_INCLUDE_DIRS}
     ${sol2_SOURCE_DIR}/include
 )
 
