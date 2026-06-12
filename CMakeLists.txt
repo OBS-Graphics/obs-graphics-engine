@@ -25,9 +25,10 @@ if(lua_ADDED)
     add_library(lua STATIC ${lua_sources})
 
     target_include_directories(lua
-    PUBLIC
-        $<BUILD_INTERFACE:${lua_SOURCE_DIR}>
+        PUBLIC
+            $<BUILD_INTERFACE:${lua_SOURCE_DIR}>
     )
+    set_target_properties(lua PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
 CPMAddPackage(
