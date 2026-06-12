@@ -12,11 +12,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install pkg-config
+        shell: pwsh
+        run: choco install pkgconfiglite -y
+
       - name: Cache vcpkg binary cache
         uses: actions/cache@v4
         with:
           path: ~/AppData/Local/vcpkg/archives
-          key: vcpkg-engine-x64-windows-v1
+          key: vcpkg-engine-x64-windows-v2
           restore-keys: vcpkg-engine-x64-windows-
 
       - name: Configure
@@ -27,8 +31,7 @@ jobs:
           cmake -B build `
             -G "Ninja Multi-Config" `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows `
-            -DPKG_CONFIG_EXECUTABLE="$installed\tools\pkgconf\pkgconf.exe"
+            -DVCPKG_TARGET_TRIPLET=x64-windows
 
       - name: Build
         shell: pwsh

@@ -2,7 +2,6 @@
   "dependencies": [
     "cairo",
     "pango",
-    "harfbuzz",
-    "pkgconf"
+    "harfbuzz"
   ]
 }
