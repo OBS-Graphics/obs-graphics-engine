@@ -1,20 +1,16 @@
 #include "element.h"
+#include "animation.h"
 
 #include <algorithm>
-
-#define _USE_MATH_DEFINES
-#include <cmath>
-
-#include "animation.h"
 
 static void RoundRect(cairo_t* ctx, double x, double y, double w, double h, const float r[4])
 {
     double tl = r[0], tr = r[1], br = r[2], bl = r[3];
     cairo_new_path(ctx);
-    cairo_arc(ctx, x + tl, y + tl, tl, M_PI, 3 * M_PI / 2);
-    cairo_arc(ctx, x + w - tr, y + tr, tr, 3 * M_PI / 2, 0);
-    cairo_arc(ctx, x + w - br, y + h - br, br, 0, M_PI / 2);
-    cairo_arc(ctx, x + bl, y + h - bl, bl, M_PI / 2, M_PI);
+    cairo_arc(ctx, x + tl, y + tl, tl, Pi, 3 * Pi / 2);
+    cairo_arc(ctx, x + w - tr, y + tr, tr, 3 * Pi / 2, 0);
+    cairo_arc(ctx, x + w - br, y + h - br, br, 0, Pi / 2);
+    cairo_arc(ctx, x + bl, y + h - bl, bl, Pi / 2, Pi);
     cairo_close_path(ctx);
 }
 
@@ -62,7 +58,7 @@ void Element::Render(cairo_t* ctx, const AnimatedTransform& xf,
 
     if (rotation != 0.0f) {
         cairo_translate(ctx, cx, cy);
-        cairo_rotate(ctx, rotation * M_PI / 180.0);
+        cairo_rotate(ctx, rotation * Pi / 180.0);
         cairo_translate(ctx, -cx, -cy);
     }
 

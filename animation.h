@@ -1,7 +1,7 @@
 #pragma once
 
-#define _USE_MATH_DEFINES
-#include <cmath>
+#include "types.hpp"
+
 #include <algorithm>
 #include <concepts>
 
@@ -92,18 +92,18 @@ T ApplyEasing(T t, Easing e)
         return t == 0 ? T(0)
                : t == 1
                    ? T(1)
-                   : -std::pow(T(2), 10 * t - 10) * std::sin((10 * t - 10.75) * T(2 * M_PI / 3));
+                   : -std::pow(T(2), 10 * t - 10) * std::sin((10 * t - 10.75) * T(2 * Pi / 3));
     case Easing::EaseOutElastic:
         return t == 0 ? T(0)
                : t == 1
                    ? T(1)
-                   : std::pow(T(2), -10 * t) * std::sin((10 * t - 0.75) * T(2 * M_PI / 3)) + T(1);
+                   : std::pow(T(2), -10 * t) * std::sin((10 * t - 0.75) * T(2 * Pi / 3)) + T(1);
     case Easing::EaseInOutElastic:
         return t == 0   ? T(0)
                : t == 1 ? T(1)
                : t < T(0.5)
-                   ? -(std::pow(T(2), 20 * t - 10) * std::sin((20 * t - 11.125) * T(2 * M_PI / 4.5))) / 2
-                   :  (std::pow(T(2), -20 * t + 10) * std::sin((20 * t - 11.125) * T(2 * M_PI / 4.5))) / 2 + T(1);
+                   ? -(std::pow(T(2), 20 * t - 10) * std::sin((20 * t - 11.125) * T(2 * Pi / 4.5))) / 2
+                   :  (std::pow(T(2), -20 * t + 10) * std::sin((20 * t - 11.125) * T(2 * Pi / 4.5))) / 2 + T(1);
     }
     return t;
 }
