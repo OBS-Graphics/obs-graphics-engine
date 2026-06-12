@@ -16,12 +16,19 @@ jobs:
         shell: pwsh
         run: choco install pkgconfiglite -y
 
+      - name: Set vcpkg cache path
+        shell: pwsh
+        run: |
+          $cacheDir = "$env:RUNNER_TEMP\vcpkg-cache"
+          New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+          echo "VCPKG_DEFAULT_BINARY_CACHE=$cacheDir" >> $env:GITHUB_ENV
+
       - name: Cache vcpkg binary cache
         uses: actions/cache@v4
         with:
-          path: ~/AppData/Local/vcpkg/archives
-          key: vcpkg-engine-x64-windows-v2
-          restore-keys: vcpkg-engine-x64-windows-
+          path: ${{ runner.temp }}/vcpkg-cache
+          key: vcpkg-engine-x64-windows-v3-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-engine-x64-windows-v3-
 
       - name: Configure
         shell: pwsh
