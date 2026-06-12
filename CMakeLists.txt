@@ -8,16 +8,9 @@ set(BUILD_SHARED_LIBS ON)
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/CPM.cmake)
 
-if(WIN32)
-    find_package(Cairo CONFIG REQUIRED)
-    find_package(Pango CONFIG REQUIRED)
-else()
-    # macOS / Linux: use pkg-config via IMPORTED_TARGET so keg-only Homebrew
-    # packages get their library search dirs automatically.
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(PANGOCAIRO REQUIRED IMPORTED_TARGET pangocairo)
-    pkg_check_modules(CAIRO REQUIRED IMPORTED_TARGET cairo)
-endif()
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(PANGOCAIRO REQUIRED IMPORTED_TARGET pangocairo)
+pkg_check_modules(CAIRO REQUIRED IMPORTED_TARGET cairo)
 
 # Lua: fetch official source and define a library target
 CPMAddPackage(
@@ -80,17 +73,11 @@ target_link_libraries(engine PUBLIC
     lua
 )
 
-if(WIN32)
-    target_link_libraries(engine PUBLIC
-        Cairo::Cairo
-        Pango::Pango
-        Pango::Cairo
-    )
-else()
-    target_link_libraries(engine PUBLIC
-        PkgConfig::PANGOCAIRO
-        PkgConfig::CAIRO
-    )
+target_link_libraries(engine PUBLIC
+    PkgConfig::PANGOCAIRO
+    PkgConfig::CAIRO
+)
+if(NOT WIN32)
     target_compile_options(engine PRIVATE
         ${PANGOCAIRO_CFLAGS_OTHER}
         ${CAIRO_CFLAGS_OTHER}
