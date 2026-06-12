@@ -8,7 +8,7 @@
 
 #include <cmath>
 #include <vector>
-#include <numeric>
+#include <numbers>
 
 constexpr double Pi = std::numbers::pi;
 
