@@ -16,28 +16,17 @@ jobs:
         shell: pwsh
         run: choco install pkgconfiglite -y
 
-      - name: Set vcpkg cache path
-        shell: pwsh
-        run: |
-          $cacheDir = "$env:RUNNER_TEMP\vcpkg-cache"
-          New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
-          echo "VCPKG_DEFAULT_BINARY_CACHE=$cacheDir" >> $env:GITHUB_ENV
-
-      - name: Cache vcpkg binary cache
-        uses: actions/cache@v4
+      - uses: lukka/run-vcpkg@v11
         with:
-          path: ${{ runner.temp }}/vcpkg-cache
-          key: vcpkg-engine-x64-windows-v3-${{ hashFiles('vcpkg.json') }}
-          restore-keys: vcpkg-engine-x64-windows-v3-
+          vcpkgJsonGlob: 'vcpkg.json'
 
       - name: Configure
         shell: pwsh
         run: |
-          $installed = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
-          $env:PKG_CONFIG_PATH = "$installed\lib\pkgconfig"
+          $env:PKG_CONFIG_PATH = "$PWD\build\vcpkg_installed\x64-windows\lib\pkgconfig"
           cmake -B build `
             -G "Ninja Multi-Config" `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows
 
       - name: Build
