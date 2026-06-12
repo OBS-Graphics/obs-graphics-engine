@@ -16,9 +16,12 @@ jobs:
         shell: pwsh
         run: choco install pkgconfiglite -y
 
-      - uses: lukka/run-vcpkg@v11
+      - name: Cache vcpkg installed packages
+        uses: actions/cache@v4
         with:
-          vcpkgJsonGlob: 'vcpkg.json'
+          path: build/vcpkg_installed
+          key: vcpkg-installed-x64-windows-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-installed-x64-windows-
 
       - name: Configure
         shell: pwsh
@@ -26,7 +29,7 @@ jobs:
           $env:PKG_CONFIG_PATH = "$PWD\build\vcpkg_installed\x64-windows\lib\pkgconfig"
           cmake -B build `
             -G "Ninja Multi-Config" `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows
 
       - name: Build
