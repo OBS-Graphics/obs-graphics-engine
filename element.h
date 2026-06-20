@@ -105,7 +105,7 @@ struct Element {
     Point GetGlobalPosition() const;
 
 private:
-    mutable std::string m_oldText{};
+    mutable std::string m_oldText{"\xff"};
     mutable qr::DynQr m_qr{};
     mutable std::shared_ptr<cairo_surface_t> m_image{};
     mutable std::string m_imageCachePath{};
