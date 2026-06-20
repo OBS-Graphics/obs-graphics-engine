@@ -4,9 +4,6 @@
 #include <algorithm>
 #include <memory>
 
-#define QR_IMPLEMENTATION
-#include "qr.hpp"
-
 static void RoundRect(cairo_t* ctx, double x, double y, double w, double h, const float r[4])
 {
     double tl = r[0], tr = r[1], br = r[2], bl = r[3];

@@ -62,6 +62,7 @@ add_library(engine STATIC
     scene.cpp
     data-source.cpp
     script.cpp
+    qr.cpp
 )
 
 target_include_directories(engine PUBLIC
