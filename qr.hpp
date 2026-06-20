@@ -354,7 +354,7 @@ bool try_encode(DynQr& out, const char *str, size_t len, Ecc ecc, int mask)
 
 } // namespace detail
 
-inline bool encode_auto(DynQr& out, const char *str, size_t len, Ecc ecc, int mask)
+bool encode_auto(DynQr& out, const char *str, size_t len, Ecc ecc, int mask)
 {
     out = {};
     return detail::try_encode<1>(out, str, len, ecc, mask);
