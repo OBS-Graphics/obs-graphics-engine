@@ -7,6 +7,7 @@
 #endif
 
 #include <cmath>
+#include <memory>
 #include <vector>
 #include <numbers>
 
@@ -21,14 +22,15 @@ struct Rectangle {
 };
 
 struct Paint {
-    enum class Type { None, Solid, Linear, Radial };
+    enum class Type { None, Solid, Linear, Radial, Image };
     struct Stop {
         double offset, r, g, b, a;
     };
 
-    Type type = Type::None;
+    Type type{Type::None};
     // Solid: r,g,b,a  |  Linear: x0,y0,x1,y1  |  Radial: cx0,cy0,r0,cx1,cy1,r1
-    double params[6] = {};
+    double params[6]{};
+    std::string imagePath{};
     std::vector<Stop> stops;
 
     Paint() = default;
@@ -70,6 +72,17 @@ struct Paint {
         return p;
     }
 
+    inline static Paint Image(const std::string& path)
+    {
+        Paint p{};
+        p.type = Type::Image;
+        p.imagePath = path;
+        p.m_patternImage = std::shared_ptr<cairo_surface_t>(
+            cairo_image_surface_create_from_png(path.c_str()),
+            cairo_surface_destroy);
+        return p;
+    }
+
     inline void AddStop(double offset, double r, double g, double b, double a = 1.0)
     {
         stops.push_back({offset, r, g, b, a});
@@ -90,6 +103,22 @@ struct Paint {
             return;
         }
 
+        if (type == Type::Image) {
+            if (!m_patternImage) return;
+            auto* surface = m_patternImage.get();
+            if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) return;
+            int sw = cairo_image_surface_get_width(surface);
+            int sh = cairo_image_surface_get_height(surface);
+            if (sw <= 0 || sh <= 0) return;
+            cairo_pattern_t* pat = cairo_pattern_create_for_surface(surface);
+            cairo_matrix_t m;
+            cairo_matrix_init_scale(&m, (double)sw / w, (double)sh / h);
+            cairo_pattern_set_matrix(pat, &m);
+            cairo_set_source(cr, pat);
+            cairo_pattern_destroy(pat);
+            return;
+        }
+
         cairo_pattern_t* pat;
         if (type == Type::Linear) {
             pat = cairo_pattern_create_linear(params[0] * w, params[1] * h, params[2] * w,
@@ -103,4 +132,7 @@ struct Paint {
         cairo_set_source(cr, pat);
         cairo_pattern_destroy(pat);
     }
+
+protected:
+    std::shared_ptr<cairo_surface_t> m_patternImage{};
 };

@@ -2,6 +2,10 @@
 #include "animation.h"
 
 #include <algorithm>
+#include <memory>
+
+#define QR_IMPLEMENTATION
+#include "qr.hpp"
 
 static void RoundRect(cairo_t* ctx, double x, double y, double w, double h, const float r[4])
 {
@@ -62,10 +66,7 @@ void Element::Render(cairo_t* ctx, const AnimatedTransform& xf,
         cairo_translate(ctx, -cx, -cy);
     }
 
-    switch (type) {
-    case ElementType::Rectangle: {
-        RoundRect(ctx, 0, 0, bounds.width, bounds.height, cornerRadius);
-
+    auto fnApplyFillAndStroke = [=, this]() {
         bool hasFill = fill.Valid();
         bool hasStroke = stroke.Valid() && strokeWidth > 0.0f;
 
@@ -82,12 +83,18 @@ void Element::Render(cairo_t* ctx, const AnimatedTransform& xf,
             cairo_set_line_width(ctx, strokeWidth);
             cairo_stroke(ctx);
         }
+    };
+
+    switch (type) {
+    case ElementType::Rectangle: {
+        RoundRect(ctx, 0, 0, bounds.width, bounds.height, cornerRadius);
+        fnApplyFillAndStroke();
         break;
     }
 
     case ElementType::Text: {
         std::string textXf = text;
-        switch (transform) {
+        switch (textStyle.transform) {
         case TextTransform::Lowercase:
             std::transform(textXf.begin(), textXf.end(), textXf.begin(), ::tolower);
             break;
@@ -134,12 +141,12 @@ void Element::Render(cairo_t* ctx, const AnimatedTransform& xf,
 
         static constexpr PangoAlignment kAlignMap[] = {PANGO_ALIGN_LEFT, PANGO_ALIGN_CENTER,
                                                        PANGO_ALIGN_LEFT, PANGO_ALIGN_RIGHT};
-        pango_layout_set_alignment(layout, kAlignMap[(int)textAlignX]);
-        pango_layout_set_justify(layout, textAlignX == HorizontalAlignment::Justify);
+        pango_layout_set_alignment(layout, kAlignMap[(int)textStyle.alignX]);
+        pango_layout_set_justify(layout, textStyle.alignX == HorizontalAlignment::Justify);
 
         double ox = 0.0, oy = 0.0;
 
-        if (autoScale) {
+        if (textStyle.autoScale) {
             pango_layout_set_width(layout, -1);
             PangoRectangle nat;
             pango_layout_get_pixel_extents(layout, &nat, nullptr);
@@ -156,15 +163,15 @@ void Element::Render(cairo_t* ctx, const AnimatedTransform& xf,
             oy = -ink.y;
         } else {
             pango_layout_set_width(layout, static_cast<int>(bounds.width * PANGO_SCALE));
-            pango_layout_set_wrap(layout, static_cast<PangoWrapMode>(wrapMode));
-            if (ellipsize != Ellipsize::None) {
-                pango_layout_set_ellipsize(layout, static_cast<PangoEllipsizeMode>(ellipsize));
+            pango_layout_set_wrap(layout, static_cast<PangoWrapMode>(textStyle.wrapMode));
+            if (textStyle.ellipsize != Ellipsize::None) {
+                pango_layout_set_ellipsize(layout, static_cast<PangoEllipsizeMode>(textStyle.ellipsize));
                 pango_layout_set_height(layout, static_cast<int>(bounds.height * PANGO_SCALE));
             }
 
             PangoRectangle ink;
             pango_layout_get_pixel_extents(layout, &ink, nullptr);
-            switch (textAlignY) {
+            switch (textStyle.alignY) {
             case VerticalAlignment::Top:
                 oy = -ink.y;
                 break;
@@ -197,18 +204,113 @@ void Element::Render(cairo_t* ctx, const AnimatedTransform& xf,
         g_object_unref(layout);
         break;
     }
+
+    case ElementType::Image: {
+        if (!imagePath.empty() && m_imageCachePath != imagePath) {
+            m_image = std::shared_ptr<cairo_surface_t>(
+                cairo_image_surface_create_from_png(imagePath.c_str()),
+                cairo_surface_destroy);
+            m_imageCachePath = imagePath;
+        }
+        auto* surface = m_image ? m_image.get() : nullptr;
+        if (surface && cairo_surface_status(surface) == CAIRO_STATUS_SUCCESS) {
+            int sw = cairo_image_surface_get_width(surface);
+            int sh = cairo_image_surface_get_height(surface);
+            if (sw > 0 && sh > 0) {
+                double bw = bounds.width, bh = bounds.height;
+                double ox = 0.0, oy = 0.0, sx = 1.0, sy = 1.0;
+
+                switch (imageScaleMode) {
+                case ScaleMode::Stretch:
+                    sx = bw / sw;
+                    sy = bh / sh;
+                    break;
+                case ScaleMode::Contain: {
+                    double s = std::min(bw / sw, bh / sh);
+                    sx = sy = s;
+                    ox = (bw - sw * s) / 2.0;
+                    oy = (bh - sh * s) / 2.0;
+                    break;
+                }
+                case ScaleMode::Cover: {
+                    double s = std::max(bw / sw, bh / sh);
+                    sx = sy = s;
+                    ox = (bw - sw * s) / 2.0;
+                    oy = (bh - sh * s) / 2.0;
+                    break;
+                }
+                case ScaleMode::FitWidth: {
+                    double s = bw / sw;
+                    sx = sy = s;
+                    oy = (bh - sh * s) / 2.0;
+                    break;
+                }
+                case ScaleMode::FitHeight: {
+                    double s = bh / sh;
+                    sx = sy = s;
+                    ox = (bw - sw * s) / 2.0;
+                    break;
+                }
+                case ScaleMode::None:
+                    ox = (bw - sw) / 2.0;
+                    oy = (bh - sh) / 2.0;
+                    break;
+                }
+
+                cairo_save(ctx);
+                // Always clip to element bounds — overflow is possible with Cover, None, FitW/H
+                cairo_rectangle(ctx, 0, 0, bw, bh);
+                cairo_clip(ctx);
+                cairo_translate(ctx, ox, oy);
+                if (imageScaleMode != ScaleMode::None)
+                    cairo_scale(ctx, sx, sy);
+                cairo_set_source_surface(ctx, surface, 0, 0);
+                cairo_paint(ctx);
+                cairo_restore(ctx);
+            }
+        }
+        break;
+    }
+
+    case ElementType::QrCode: {
+        if (m_oldText != text) {
+            qr::encode_auto(m_qr, text.c_str(), text.size(), qr::Ecc::M);
+            m_oldText = text;
+        }
+
+        if (m_qr.side_size() > 0) {
+            double qrSizePx = std::min(bounds.width, bounds.height);
+            double cellSize = qrSizePx / m_qr.side_size();
+            double qrX = bounds.width / 2 - qrSizePx / 2;
+            double qrY = bounds.height / 2 - qrSizePx / 2;
+
+            cairo_save(ctx);
+            cairo_translate(ctx, qrX, qrY);
+            for (int y = 0; y < m_qr.side_size(); ++y) {
+                for (int x = 0; x < m_qr.side_size(); ++x) {
+                    if (m_qr.module(x, y)) {
+                        cairo_rectangle(ctx, x * cellSize, y * cellSize, cellSize, cellSize);
+                    }
+                }
+            }
+            cairo_set_fill_rule(ctx, CAIRO_FILL_RULE_EVEN_ODD);
+            fnApplyFillAndStroke();
+            cairo_restore(ctx);
+        }
+        break;
+    }
     }
 
     cairo_restore(ctx); // undo scale/rotation so children use the unmodified CTM
 
     // Children rendered on top, inside the group so parent opacity cascades to them
     if (!children.empty()) {
-        std::vector<const Element*> sorted(children.begin(), children.end());
+        std::vector<Element*> sorted(children.begin(), children.end());
         std::stable_sort(sorted.begin(), sorted.end(),
-                         [](const Element* a, const Element* b) { return a->zOrder < b->zOrder; });
+                         [](Element* a, Element* b) { return a->zOrder < b->zOrder; });
 
         cairo_save(ctx);
-        for (const Element* child : sorted) {
+        for (Element* child : sorted) {
             const auto& def = isOut ? child->outAnimation : child->inAnimation;
             AnimatedTransform childXf = animation::EvaluateAnimation(def, timer, isOut, *child);
 

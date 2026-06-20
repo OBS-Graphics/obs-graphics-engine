@@ -159,6 +159,16 @@ static TextTransform ParseTextTransform(const std::string& s)
     return TextTransform::None;
 }
 
+static ScaleMode ParseScaleMode(const std::string& s)
+{
+    if (s == "contain")    return ScaleMode::Contain;
+    if (s == "cover")      return ScaleMode::Cover;
+    if (s == "fit_width")  return ScaleMode::FitWidth;
+    if (s == "fit_height") return ScaleMode::FitHeight;
+    if (s == "none")       return ScaleMode::None;
+    return ScaleMode::Stretch;
+}
+
 static Paint ParsePaint(const json& v)
 {
     if (v.is_array() && v.size() >= 3) {
@@ -167,8 +177,17 @@ static Paint ParsePaint(const json& v)
         return Paint::Solid(r, g, b, a);
     }
 
+    if (v.is_string()) {
+        return Paint::Image(v.get<std::string>());
+    }
+
     if (v.is_object()) {
         std::string type = v.value("type", "");
+
+        if (type == "image") {
+            return Paint::Image(v.value("path", ""));
+        }
+
         Paint p = (type == "radial")
                       ? Paint::Radial(v.value("cx0", 0.0), v.value("cy0", 0.0), v.value("r0", 0.0),
                                       v.value("cx1", 0.0), v.value("cy1", 0.0), v.value("r1", 1.0))
@@ -195,7 +214,10 @@ static Element ParseElement(const json& j)
     Element el;
     el.id = j.value("id", "");
     std::string t = j.value("type", "");
-    el.type = (t == "text") ? ElementType::Text : ElementType::Rectangle;
+    el.type = (t == "text")    ? ElementType::Text
+            : (t == "image")   ? ElementType::Image
+            : (t == "qr_code") ? ElementType::QrCode
+            : ElementType::Rectangle;
 
     el.bounds = {j.value("x", 0.0), j.value("y", 0.0), j.value("w", 0.0), j.value("h", 0.0)};
 
@@ -228,12 +250,14 @@ static Element ParseElement(const json& j)
     el.font.isUnderline = j.value("font_underline", false);
     el.font.isStrikethrough = j.value("font_strikethrough", false);
     el.font.weight = ParseFontWeight(j.value("font_weight", "normal"));
-    el.autoScale = j.value("auto_scale", false);
-    el.textAlignX = ParseHAlignment(j.value("text_align_x", "left"));
-    el.textAlignY = ParseVAlignment(j.value("text_align_y", "top"));
-    el.ellipsize = ParseEllipsize(j.value("ellipsize", "none"));
-    el.wrapMode = ParseWrapMode(j.value("wrap", "word"));
-    el.transform = ParseTextTransform(j.value("text_transform", "none"));
+    el.imagePath = j.value("image_path", "");
+    el.imageScaleMode = ParseScaleMode(j.value("scale_mode", "stretch"));
+    el.textStyle.autoScale = j.value("auto_scale", false);
+    el.textStyle.alignX = ParseHAlignment(j.value("text_align_x", "left"));
+    el.textStyle.alignY = ParseVAlignment(j.value("text_align_y", "top"));
+    el.textStyle.ellipsize = ParseEllipsize(j.value("ellipsize", "none"));
+    el.textStyle.wrapMode = ParseWrapMode(j.value("wrap", "word"));
+    el.textStyle.transform = ParseTextTransform(j.value("text_transform", "none"));
 
     if (j.contains("anim_in"))
         el.inAnimation = ParseAnimationDef(j["anim_in"]);

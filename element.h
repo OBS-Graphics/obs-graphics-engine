@@ -1,13 +1,15 @@
 #pragma once
 
+#include <memory>
 #include <pango/pangocairo.h>
 #include <string>
 #include <vector>
 
 #include "animation.h"
 #include "types.hpp"
+#include "qr.hpp"
 
-enum class ElementType { Rectangle, Text };
+enum class ElementType { Rectangle, Text, Image, QrCode };
 
 enum class FontWeight {
     Normal = PANGO_WEIGHT_NORMAL,
@@ -44,6 +46,8 @@ enum class WrapMode {
 
 enum class TextTransform { None = 0, Capitalize, Uppercase, Lowercase };
 
+enum class ScaleMode { Stretch, Contain, Cover, FitWidth, FitHeight, None };
+
 struct Element {
     std::string id;
     ElementType type;
@@ -78,12 +82,18 @@ struct Element {
     } font{};
 
     std::string text;
-    bool autoScale{false};
-    HorizontalAlignment textAlignX{HorizontalAlignment::Left};
-    VerticalAlignment textAlignY{VerticalAlignment::Top};
-    Ellipsize ellipsize{Ellipsize::None};
-    WrapMode wrapMode{WrapMode::Word};
-    TextTransform transform{TextTransform::None};
+
+    struct {
+        bool autoScale{false};
+        HorizontalAlignment alignX{HorizontalAlignment::Left};
+        VerticalAlignment alignY{VerticalAlignment::Top};
+        Ellipsize ellipsize{Ellipsize::None};
+        WrapMode wrapMode{WrapMode::Word};
+        TextTransform transform{TextTransform::None};
+    } textStyle{};
+
+    std::string imagePath{};
+    ScaleMode imageScaleMode{ScaleMode::Stretch};
 
     void Render(cairo_t* ctx, const AnimatedTransform& xf,
                 const AnimatedTransform* maskXf,
@@ -93,4 +103,10 @@ struct Element {
                        const AnimatedTransform* maskXf,
                        double parentOffX, double parentOffY) const;
     Point GetGlobalPosition() const;
+
+private:
+    mutable std::string m_oldText{};
+    mutable qr::DynQr m_qr{};
+    mutable std::shared_ptr<cairo_surface_t> m_image{};
+    mutable std::string m_imageCachePath{};
 };

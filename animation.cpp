@@ -10,48 +10,55 @@ AnimatedTransform EvaluateAnimation(const AnimationDef& def, double timer, bool 
 
     double t = (timer - def.delay) / def.duration;
     double p = animation::ApplyEasing(std::clamp(t, 0.0, 1.0), def.easing);
-    if (isOut)
-        p = 1.0f - p;
+    double rp = 1.0 - p;
+
+    auto fnFade = [&]() {
+        out.opacity = isOut ? rp : p;
+    };
+
+    auto fnSlide = [&](double& out, double max, bool flip = false) {
+        out = (isOut ? p : rp) * (flip ? -1.0 : 1.0) * max;
+    };
 
     switch (def.type) {
     case AnimationType::None:
         break;
-    case AnimationType::Fade:
-        out.opacity = p;
-        break;
+    case AnimationType::Fade: fnFade(); break;
     case AnimationType::SlideUp:
-        out.offsetY = (1.0 - p) * el.bounds.height;
-        out.opacity = p;
+        fnSlide(out.offsetY, el.bounds.height);
+        fnFade();
         break;
     case AnimationType::SlideDown:
-        out.offsetY = -(1.0 - p) * el.bounds.height;
-        out.opacity = p;
+        fnSlide(out.offsetY, el.bounds.height, true);
+        fnFade();
         break;
     case AnimationType::SlideLeft:
-        out.offsetX = (1.0 - p) * el.bounds.width;
-        out.opacity = p;
+        fnSlide(out.offsetX, el.bounds.width);
+        fnFade();
         break;
     case AnimationType::SlideRight:
-        out.offsetX = -(1.0 - p) * el.bounds.width;
-        out.opacity = p;
+        fnSlide(out.offsetX, el.bounds.width, true);
+        fnFade();
         break;
     case AnimationType::WipeUp:
-        out.clipY = 1.0 - p;
-        out.clipH = p;
+        out.clipY = isOut ? 0.0 : rp;
+        out.clipH = isOut ? rp : p;
         break;
     case AnimationType::WipeDown:
-        out.clipH = p;
+        out.clipY = isOut ? p : 0.0;
+        out.clipH = isOut ? rp : p;
         break;
     case AnimationType::WipeLeft:
-        out.clipX = 1.0 - p;
-        out.clipW = p;
+        out.clipX = isOut ? 0.0 : rp;
+        out.clipW = isOut ? rp : p;
         break;
     case AnimationType::WipeRight:
-        out.clipW = p;
+        out.clipX = isOut ? p : 0.0;
+        out.clipW = isOut ? rp : p;
         break;
     case AnimationType::ScaleIn:
-        out.opacity = p;
-        out.scale = p;
+        fnFade();
+        out.scale = isOut ? rp : p;
         break;
     }
 
