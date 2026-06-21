@@ -243,6 +243,8 @@ static Element ParseElement(const json& j)
     el.strokeWidth = j.value("stroke_width", 0.0f);
     el.opacity = j.value("opacity", 1.0f);
     el.rotation = j.value("rotation", 0.0f);
+    el.shearX = j.value("shear_x", 0.0f);
+    el.shearY = j.value("shear_y", 0.0f);
     el.text = j.value("text", "");
     el.font.family = j.value("font_family", "Sans");
     el.font.size = j.value("font_size", 36.0f);
@@ -258,6 +260,18 @@ static Element ParseElement(const json& j)
     el.textStyle.ellipsize = ParseEllipsize(j.value("ellipsize", "none"));
     el.textStyle.wrapMode = ParseWrapMode(j.value("wrap", "word"));
     el.textStyle.transform = ParseTextTransform(j.value("text_transform", "none"));
+
+    if (j.contains("shadow") && j["shadow"].is_object()) {
+        const auto& sj = j["shadow"];
+        el.shadow.enabled = sj.value("enabled", true);
+        el.shadow.offsetX = sj.value("offset_x", 4.0);
+        el.shadow.offsetY = sj.value("offset_y", 4.0);
+        el.shadow.blur = sj.value("blur", 8.0);
+        if (sj.contains("color") && sj["color"].is_array() && sj["color"].size() >= 4) {
+            for (int i = 0; i < 4; ++i)
+                el.shadow.color[i] = sj["color"][i].get<float>();
+        }
+    }
 
     if (j.contains("anim_in"))
         el.inAnimation = ParseAnimationDef(j["anim_in"]);

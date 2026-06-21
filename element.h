@@ -58,6 +58,8 @@ struct Element {
 
     Rectangle bounds{0.0, 0.0, 100.0, 100.0};
     float rotation{0.0f};
+    float shearX{0.0f};
+    float shearY{0.0f};
 
     Paint fill, stroke;
     float strokeWidth{0.0f};
@@ -94,6 +96,15 @@ struct Element {
 
     std::string imagePath{};
     ScaleMode imageScaleMode{ScaleMode::Stretch};
+
+    struct DropShadow {
+        bool enabled{false};
+        double offsetX{4.0};
+        double offsetY{4.0};
+        double blur{8.0};
+        // RGBA, each in [0, 1]
+        float color[4]{0.0f, 0.0f, 0.0f, 0.8f};
+    } shadow{};
 
     void Render(cairo_t* ctx, const AnimatedTransform& xf,
                 const AnimatedTransform* maskXf,

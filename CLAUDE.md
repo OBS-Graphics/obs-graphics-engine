@@ -42,6 +42,8 @@ All sources live at repo root (no `src/` subdirectory):
 - Text layout properties are grouped in `textStyle{}` (anonymous struct): `autoScale`, `alignX`, `alignY`, `ellipsize`, `wrapMode`, `transform`.
 - Image properties: `imagePath`, `imageScaleMode` (`Stretch`/`Contain`/`Cover`/`FitWidth`/`FitHeight`/`None`).
 - QrCode encodes `text` via qr.hpp; re-encodes only when `text` changes.
+- **Shear**: `shearX`/`shearY` apply a 2D shear transform (centred on the element) to self-content and its clip path. Children are NOT sheared.
+- **Drop shadow**: `shadow{}` struct (`enabled`, `offsetX`, `offsetY`, `blur`, `color[4]` RGBA). Rendered via Cairo mesh pattern (rounded ring gradient + solid fan fill) **before** any wipe/corner/mask clip is applied, so the shadow is never clipped. During wipe animations the shadow tracks the clip box rather than the full element bounds. `shadow.blur` controls edge ring thickness (`edgeThickness = blur * 2`). The shadow corner radius matches the element's minimum `cornerRadius`.
 
 **`Graphic`** — Named group of elements. State machine: `Hidden → AnimatingIn → Visible → AnimatingOut → Hidden`. `Tick(dt)` advances the timer; `Render(cr)` draws all elements sorted by zOrder.
 
@@ -63,6 +65,9 @@ All sources live at repo root (no `src/` subdirectory):
 | `ellipsize` | string | `"none"`, `"start"`, `"middle"`, `"end"` |
 | `wrap` | string | `"word"`, `"char"`, `"word_char"` |
 | `text_transform` | string | `"none"`, `"capitalize"`, `"uppercase"`, `"lowercase"` |
+| `shear_x` | float | Horizontal shear factor (default 0) |
+| `shear_y` | float | Vertical shear factor (default 0) |
+| `shadow` | object | Drop shadow: `enabled` (bool), `offset_x`, `offset_y`, `blur` (floats), `color` ([r,g,b,a] array) |
 
 ## Conventions
 

@@ -2,7 +2,9 @@
 #include "animation.h"
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
+#include <vector>
 #include "stb_image.h"
 
 static std::shared_ptr<cairo_surface_t> LoadImageSurface(const std::string& path)
@@ -34,6 +36,90 @@ static std::shared_ptr<cairo_surface_t> LoadImageSurface(const std::string& path
     return std::shared_ptr<cairo_surface_t>(surface, cairo_surface_destroy);
 }
 
+// Drop shadow via mesh pattern: outer ring fades from shadowAlpha → transparent,
+// inner area filled solid. cornerR matches element corner radius so shadow outline
+// follows the element shape. 'a' is pre-baked with element opacity.
+static void DrawDropShadow(cairo_t* ctx, double ox, double oy, double sw, double sh,
+                           double blur, double r, double g, double b, double a,
+                           float cornerR_in)
+{
+    if (a < 1e-6 || sw <= 0.0 || sh <= 0.0 || blur <= 0.0)
+        return;
+
+    float x = (float)ox, y = (float)oy;
+    float w = (float)sw, h = (float)sh;
+    float elevation = (float)blur;
+
+    float cornerR = std::clamp(cornerR_in > 0.0f ? cornerR_in : 1.0f, 1.0f, std::min(w, h) / 2.0f);
+    float edgeThickness = elevation * 2.0f;
+    float inR = cornerR;
+    float outR = cornerR + edgeThickness;
+
+    const float e = 0.5f;
+    float arg = std::clamp(2.0f * std::pow(1.0f - e / cornerR, 2.0f) - 1.0f, -1.0f, 1.0f);
+    int stepsPerCorner = std::max(2, (int)std::ceil((float)(M_PI / 2) / std::acos(arg)));
+
+    struct Vec2 { float x, y; };
+    Vec2 centers[4] = {
+        {x + cornerR,     y + cornerR},
+        {x + w - cornerR, y + cornerR},
+        {x + w - cornerR, y + h - cornerR},
+        {x + cornerR,     y + h - cornerR},
+    };
+    const float startAngles[4] = {(float)M_PI, (float)(3 * M_PI / 2), 0.0f, (float)(M_PI / 2)};
+
+    std::vector<Vec2> innerPts, outerPts;
+    innerPts.reserve((stepsPerCorner + 1) * 4);
+    outerPts.reserve((stepsPerCorner + 1) * 4);
+    for (int c = 0; c < 4; c++) {
+        for (int i = 0; i <= stepsPerCorner; i++) {
+            float angle = startAngles[c] + (float)i / stepsPerCorner * (float)(M_PI / 2);
+            innerPts.push_back({centers[c].x + inR * std::cos(angle),
+                                centers[c].y + inR * std::sin(angle)});
+            outerPts.push_back({centers[c].x + outR * std::cos(angle),
+                                centers[c].y + outR * std::sin(angle)});
+        }
+    }
+
+    cairo_pattern_t* pat = cairo_pattern_create_mesh();
+    int n = (int)innerPts.size();
+
+    // Gradient ring: inner edge = shadow colour, outer edge = transparent
+    for (int i = 0; i < n; i++) {
+        int j = (i + 1) % n;
+        cairo_mesh_pattern_begin_patch(pat);
+        cairo_mesh_pattern_move_to(pat, innerPts[i].x, innerPts[i].y);
+        cairo_mesh_pattern_line_to(pat, innerPts[j].x, innerPts[j].y);
+        cairo_mesh_pattern_line_to(pat, outerPts[j].x, outerPts[j].y);
+        cairo_mesh_pattern_line_to(pat, outerPts[i].x, outerPts[i].y);
+        cairo_mesh_pattern_set_corner_color_rgba(pat, 0, r, g, b, a);
+        cairo_mesh_pattern_set_corner_color_rgba(pat, 1, r, g, b, a);
+        cairo_mesh_pattern_set_corner_color_rgba(pat, 2, r, g, b, 0.0);
+        cairo_mesh_pattern_set_corner_color_rgba(pat, 3, r, g, b, 0.0);
+        cairo_mesh_pattern_end_patch(pat);
+    }
+
+    // Solid fill: triangle fan from centre to inner ring
+    float fcx = x + w * 0.5f, fcy = y + h * 0.5f;
+    for (int i = 0; i < n; i++) {
+        int j = (i + 1) % n;
+        cairo_mesh_pattern_begin_patch(pat);
+        cairo_mesh_pattern_move_to(pat, fcx, fcy);
+        cairo_mesh_pattern_line_to(pat, innerPts[i].x, innerPts[i].y);
+        cairo_mesh_pattern_line_to(pat, innerPts[j].x, innerPts[j].y);
+        cairo_mesh_pattern_line_to(pat, fcx, fcy);
+        cairo_mesh_pattern_set_corner_color_rgba(pat, 0, r, g, b, a);
+        cairo_mesh_pattern_set_corner_color_rgba(pat, 1, r, g, b, a);
+        cairo_mesh_pattern_set_corner_color_rgba(pat, 2, r, g, b, a);
+        cairo_mesh_pattern_set_corner_color_rgba(pat, 3, r, g, b, a);
+        cairo_mesh_pattern_end_patch(pat);
+    }
+
+    cairo_set_source(ctx, pat);
+    cairo_paint(ctx);
+    cairo_pattern_destroy(pat);
+}
+
 static void RoundRect(cairo_t* ctx, double x, double y, double w, double h, const float r[4])
 {
     double tl = r[0], tr = r[1], br = r[2], bl = r[3];
@@ -57,10 +143,32 @@ void Element::Render(cairo_t* ctx, const AnimatedTransform& xf,
     // Slide offset first so the clip region moves with the element, not against it
     cairo_translate(ctx, xf.offsetX, xf.offsetY);
 
-    // Wipe clip only — applied before the group so children are revealed/hidden
-    // with the parent during wipe animations. Corner radius is intentionally
-    // excluded here: it is cosmetic for the parent shape and must not clip children.
     const bool isWiping = xf.clipX > 0.0 || xf.clipY > 0.0 || xf.clipW < 1.0 || xf.clipH < 1.0;
+
+    // Shadow: rendered BEFORE any clip so it is never clipped by corner radius,
+    // mask clipping, or the wipe rectangle. It tracks the wipe clip box when animating.
+    if (shadow.enabled) {
+        double sx, sy, sw, sh;
+        if (isWiping) {
+            sx = xf.clipX * bounds.width  + shadow.offsetX;
+            sy = xf.clipY * bounds.height + shadow.offsetY;
+            sw = xf.clipW * bounds.width;
+            sh = xf.clipH * bounds.height;
+        } else {
+            sx = shadow.offsetX;
+            sy = shadow.offsetY;
+            sw = bounds.width;
+            sh = bounds.height;
+        }
+        float cr = *std::min_element(cornerRadius, cornerRadius + 4);
+        cairo_save(ctx);
+        DrawDropShadow(ctx, sx, sy, sw, sh, (double)shadow.blur,
+                       shadow.color[0], shadow.color[1], shadow.color[2],
+                       shadow.color[3] * (double)(opacity * xf.opacity), cr);
+        cairo_restore(ctx);
+    }
+
+    // Wipe clip AFTER shadow
     if (isWiping) {
         cairo_rectangle(ctx, 0, 0, bounds.width, bounds.height);
         cairo_clip(ctx);
@@ -78,6 +186,16 @@ void Element::Render(cairo_t* ctx, const AnimatedTransform& xf,
     // Self content — full clip (corner radius + wipe + mask) inside save/restore
     // so it never bleeds into the children rendering below.
     cairo_save(ctx);
+
+    if (shearX != 0.0f || shearY != 0.0f) {
+        double cx = bounds.width / 2.0;
+        double cy = bounds.height / 2.0;
+        cairo_translate(ctx, cx, cy);
+        cairo_matrix_t shearMat;
+        cairo_matrix_init(&shearMat, 1.0, (double)shearY, (double)shearX, 1.0, 0.0, 0.0);
+        cairo_transform(ctx, &shearMat);
+        cairo_translate(ctx, -cx, -cy);
+    }
 
     ApplyClipping(ctx, xf, maskXf, parentOffX, parentOffY);
 
