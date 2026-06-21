@@ -25,7 +25,16 @@ void Graphic::UpdateData() {
     for (auto&& rec : record) {
         try {
             auto& el = GetById(rec.first);
-            el.text = rec.second;
+            switch (el.type) {
+                case ElementType::Text:
+                case ElementType::QrCode:
+                    el.text = rec.second;
+                    break;
+                case ElementType::Image:
+                    el.imagePath = rec.second;
+                    break;
+                default: break;
+            }
         } catch (const std::runtime_error&) {
             // No element with this id; ignore
         }
@@ -46,7 +55,7 @@ void Graphic::Tick(float timeStep)
     // Update data timer
     updateTimer += timeStep;
 
-    const double updateInterval = 0.2;
+    const double updateInterval = 0.25;
     int prevSlot = static_cast<int>(prevUpdateTimer / updateInterval);
     int currSlot = static_cast<int>(updateTimer / updateInterval);
 
