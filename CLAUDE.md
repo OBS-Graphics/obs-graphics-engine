@@ -24,6 +24,7 @@ All sources live at repo root (no `src/` subdirectory):
 - `script.h/cpp` — `ScriptDataSource` (Lua via sol2)
 - `json.hpp` — vendored nlohmann/json
 - `qr.hpp` — single-header QR encoder (header-only, `QR_IMPLEMENTATION` defined in element.cpp)
+- `stb.cpp` — single translation unit that provides `stb_image` implementation (`STB_IMAGE_IMPLEMENTATION`)
 
 ## Key types
 
@@ -31,7 +32,7 @@ All sources live at repo root (no `src/` subdirectory):
 - Solid: `params[0..3]` = r,g,b,a
 - Linear: `params[0..3]` = x0,y0,x1,y1 (normalized 0–1, scaled by element bounds at render)
 - Radial: `params[0..2]` = focus cx,cy,r; `params[3..5]` = main cx,cy,r (normalized by element width)
-- Image: loaded from `imagePath` via `cairo_image_surface_create_from_png`; surface held by `shared_ptr`
+- Image: loaded from `imagePath` via stb_image (supports PNG, JPEG, and other formats); converted to premultiplied ARGB32 Cairo surface held by `shared_ptr`
 
 **`Element`** — Renderable item (Rectangle, Text, Image, or QrCode).
 - `bounds.x/y` are **local (parent-relative)** when `parent != nullptr`. Always use `GetGlobalPosition()` for screen position.
@@ -53,7 +54,7 @@ All sources live at repo root (no `src/` subdirectory):
 | Field | Type | Notes |
 |---|---|---|
 | `type` | string | `"rectangle"`, `"text"`, `"image"`, `"qr_code"` |
-| `image_path` | string | PNG file path (Image element) |
+| `image_path` | string | Image file path (PNG, JPEG, etc.) for Image element |
 | `scale_mode` | string | `"stretch"` (default), `"contain"`, `"cover"`, `"fit_width"`, `"fit_height"`, `"none"` |
 | `fill` / `stroke` | array, object, or string | Array = solid RGBA; object = linear/radial/image gradient; string = image path |
 | `text_align_x` | string | `"left"`, `"center"`, `"right"`, `"justify"` |

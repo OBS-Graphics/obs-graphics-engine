@@ -55,6 +55,13 @@ if (nlohmann_json_ADDED)
   target_include_directories(nlohmann_json INTERFACE ${nlohmann_json_SOURCE_DIR}/include)
 endif()
 
+CPMAddPackage(
+    NAME stb
+    GITHUB_REPOSITORY nothings/stb
+    GIT_TAG master
+    DOWNLOAD_ONLY YES
+)
+
 add_library(engine STATIC
     element.cpp
     animation.cpp
@@ -63,11 +70,16 @@ add_library(engine STATIC
     data-source.cpp
     script.cpp
     qr.cpp
+    stb.cpp
 )
 
 target_include_directories(engine PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
+
+if (stb_ADDED)
+    target_include_directories(engine PRIVATE ${stb_SOURCE_DIR})
+endif()
 
 target_link_libraries(engine PUBLIC
     sol2

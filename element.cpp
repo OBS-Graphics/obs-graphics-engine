@@ -3,6 +3,36 @@
 
 #include <algorithm>
 #include <memory>
+#include "stb_image.h"
+
+static std::shared_ptr<cairo_surface_t> LoadImageSurface(const std::string& path)
+{
+    int w, h, channels;
+    unsigned char* pixels = stbi_load(path.c_str(), &w, &h, &channels, 4);
+    if (!pixels)
+        return {};
+
+    cairo_surface_t* surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
+    cairo_surface_flush(surface);
+
+    uint8_t* dst = cairo_image_surface_get_data(surface);
+    int dstStride = cairo_image_surface_get_stride(surface);
+
+    for (int y = 0; y < h; y++) {
+        const unsigned char* src = pixels + y * w * 4;
+        uint32_t* row = reinterpret_cast<uint32_t*>(dst + y * dstStride);
+        for (int x = 0; x < w; x++) {
+            uint32_t r = src[0], g = src[1], b = src[2], a = src[3];
+            // stb gives non-premultiplied RGBA; Cairo ARGB32 is premultiplied
+            *row++ = (a << 24) | ((r * a / 255) << 16) | ((g * a / 255) << 8) | (b * a / 255);
+            src += 4;
+        }
+    }
+
+    cairo_surface_mark_dirty(surface);
+    stbi_image_free(pixels);
+    return std::shared_ptr<cairo_surface_t>(surface, cairo_surface_destroy);
+}
 
 static void RoundRect(cairo_t* ctx, double x, double y, double w, double h, const float r[4])
 {
@@ -204,9 +234,7 @@ void Element::Render(cairo_t* ctx, const AnimatedTransform& xf,
 
     case ElementType::Image: {
         if (!imagePath.empty() && m_imageCachePath != imagePath) {
-            m_image = std::shared_ptr<cairo_surface_t>(
-                cairo_image_surface_create_from_png(imagePath.c_str()),
-                cairo_surface_destroy);
+            m_image = LoadImageSurface(imagePath);
             m_imageCachePath = imagePath;
         }
         auto* surface = m_image ? m_image.get() : nullptr;
@@ -291,7 +319,12 @@ void Element::Render(cairo_t* ctx, const AnimatedTransform& xf,
                 }
             }
             cairo_set_fill_rule(ctx, CAIRO_FILL_RULE_EVEN_ODD);
-            fnApplyFillAndStroke();
+            if (fill.Valid() || (stroke.Valid() && strokeWidth > 0.0f)) {
+                fnApplyFillAndStroke();
+            } else {
+                cairo_set_source_rgba(ctx, 0.0, 0.0, 0.0, 1.0);
+                cairo_fill(ctx);
+            }
             cairo_restore(ctx);
         }
         break;
