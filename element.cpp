@@ -57,7 +57,7 @@ static void DrawDropShadow(cairo_t* ctx, double ox, double oy, double sw, double
 
     const float e = 0.5f;
     float arg = std::clamp(2.0f * std::pow(1.0f - e / cornerR, 2.0f) - 1.0f, -1.0f, 1.0f);
-    int stepsPerCorner = std::max(2, (int)std::ceil((float)(M_PI / 2) / std::acos(arg)));
+    int stepsPerCorner = std::max(2, (int)std::ceil((float)(Pi / 2) / std::acos(arg)));
 
     struct Vec2 { float x, y; };
     Vec2 centers[4] = {
@@ -66,14 +66,14 @@ static void DrawDropShadow(cairo_t* ctx, double ox, double oy, double sw, double
         {x + w - cornerR, y + h - cornerR},
         {x + cornerR,     y + h - cornerR},
     };
-    const float startAngles[4] = {(float)M_PI, (float)(3 * M_PI / 2), 0.0f, (float)(M_PI / 2)};
+    const float startAngles[4] = {(float)Pi, (float)(3 * Pi / 2), 0.0f, (float)(Pi / 2)};
 
     std::vector<Vec2> innerPts, outerPts;
     innerPts.reserve((stepsPerCorner + 1) * 4);
     outerPts.reserve((stepsPerCorner + 1) * 4);
     for (int c = 0; c < 4; c++) {
         for (int i = 0; i <= stepsPerCorner; i++) {
-            float angle = startAngles[c] + (float)i / stepsPerCorner * (float)(M_PI / 2);
+            float angle = startAngles[c] + (float)i / stepsPerCorner * (float)(Pi / 2);
             innerPts.push_back({centers[c].x + inR * std::cos(angle),
                                 centers[c].y + inR * std::sin(angle)});
             outerPts.push_back({centers[c].x + outR * std::cos(angle),
