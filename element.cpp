@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <memory>
 #include <vector>
 #include "stb_image.h"
@@ -36,101 +37,87 @@ static std::shared_ptr<cairo_surface_t> LoadImageSurface(const std::string& path
     return std::shared_ptr<cairo_surface_t>(surface, cairo_surface_destroy);
 }
 
-// Drop shadow via mesh pattern: outer ring fades from shadowAlpha → transparent,
-// inner area filled solid. cornerR matches element corner radius so shadow outline
-// follows the element shape. 'a' is pre-baked with element opacity.
-static void DrawDropShadow(cairo_t* ctx, double ox, double oy, double sw, double sh,
-                           double blur, double r, double g, double b, double a,
-                           float cornerR_in)
+static void RoundRect(cairo_t* ctx, double x, double y, double w, double h, const float r[4]);
+
+// Fixed-point reciprocal of the window size, so the per-pixel normalization is a
+// multiply+shift instead of an integer division (the hot-loop bottleneck).
+static inline uint32_t BlurRecip(uint32_t win)
 {
-    if (a < 1e-6 || sw <= 0.0 || sh <= 0.0 || blur <= 0.0)
-        return;
-
-    float x = (float)ox, y = (float)oy;
-    float w = (float)sw, h = (float)sh;
-    float elevation = (float)blur;
-
-    float cornerR = std::clamp(cornerR_in > 0.0f ? cornerR_in : 1.0f, 1.0f, std::min(w, h) / 2.0f);
-    float edgeThickness = elevation * 2.0f;
-    float inR = cornerR;
-    float outR = cornerR + edgeThickness;
-
-    const float e = 0.5f;
-    float arg = std::clamp(2.0f * std::pow(1.0f - e / cornerR, 2.0f) - 1.0f, -1.0f, 1.0f);
-    int stepsPerCorner = std::max(2, (int)std::ceil((float)(Pi / 2) / std::acos(arg)));
-
-    struct Vec2 { float x, y; };
-    Vec2 centers[4] = {
-        {x + cornerR,     y + cornerR},
-        {x + w - cornerR, y + cornerR},
-        {x + w - cornerR, y + h - cornerR},
-        {x + cornerR,     y + h - cornerR},
-    };
-    const float startAngles[4] = {(float)Pi, (float)(3 * Pi / 2), 0.0f, (float)(Pi / 2)};
-
-    std::vector<Vec2> innerPts, outerPts;
-    innerPts.reserve((stepsPerCorner + 1) * 4);
-    outerPts.reserve((stepsPerCorner + 1) * 4);
-    for (int c = 0; c < 4; c++) {
-        for (int i = 0; i <= stepsPerCorner; i++) {
-            float angle = startAngles[c] + (float)i / stepsPerCorner * (float)(Pi / 2);
-            innerPts.push_back({centers[c].x + inR * std::cos(angle),
-                                centers[c].y + inR * std::sin(angle)});
-            outerPts.push_back({centers[c].x + outR * std::cos(angle),
-                                centers[c].y + outR * std::sin(angle)});
-        }
-    }
-
-    cairo_pattern_t* pat = cairo_pattern_create_mesh();
-    int n = (int)innerPts.size();
-
-    // Gradient ring: inner edge = shadow colour, outer edge = transparent
-    for (int i = 0; i < n; i++) {
-        int j = (i + 1) % n;
-        cairo_mesh_pattern_begin_patch(pat);
-        cairo_mesh_pattern_move_to(pat, innerPts[i].x, innerPts[i].y);
-        cairo_mesh_pattern_line_to(pat, innerPts[j].x, innerPts[j].y);
-        cairo_mesh_pattern_line_to(pat, outerPts[j].x, outerPts[j].y);
-        cairo_mesh_pattern_line_to(pat, outerPts[i].x, outerPts[i].y);
-        cairo_mesh_pattern_set_corner_color_rgba(pat, 0, r, g, b, a);
-        cairo_mesh_pattern_set_corner_color_rgba(pat, 1, r, g, b, a);
-        cairo_mesh_pattern_set_corner_color_rgba(pat, 2, r, g, b, 0.0);
-        cairo_mesh_pattern_set_corner_color_rgba(pat, 3, r, g, b, 0.0);
-        cairo_mesh_pattern_end_patch(pat);
-    }
-
-    // Solid fill: triangle fan from centre to inner ring
-    float fcx = x + w * 0.5f, fcy = y + h * 0.5f;
-    for (int i = 0; i < n; i++) {
-        int j = (i + 1) % n;
-        cairo_mesh_pattern_begin_patch(pat);
-        cairo_mesh_pattern_move_to(pat, fcx, fcy);
-        cairo_mesh_pattern_line_to(pat, innerPts[i].x, innerPts[i].y);
-        cairo_mesh_pattern_line_to(pat, innerPts[j].x, innerPts[j].y);
-        cairo_mesh_pattern_line_to(pat, fcx, fcy);
-        cairo_mesh_pattern_set_corner_color_rgba(pat, 0, r, g, b, a);
-        cairo_mesh_pattern_set_corner_color_rgba(pat, 1, r, g, b, a);
-        cairo_mesh_pattern_set_corner_color_rgba(pat, 2, r, g, b, a);
-        cairo_mesh_pattern_set_corner_color_rgba(pat, 3, r, g, b, a);
-        cairo_mesh_pattern_end_patch(pat);
-    }
-
-    cairo_set_source(ctx, pat);
-    cairo_paint(ctx);
-    cairo_pattern_destroy(pat);
+    return (uint32_t)(((1ull << 24) + win - 1) / win); // ceil(2^24 / win)
 }
 
-// Cached drop shadow. The mesh rasterization (the expensive part) is rendered
-// once into an offscreen ARGB32 surface and blitted every frame, recomputed only
-// when geometry/colour/opacity or the sub-pixel phase changes.
-//
-// Bit-identity: the shadow is a single mesh paint, so rendering it over a
-// transparent cache (OVER a transparent dest is exact, no quantization) and then
-// compositing that cache OVER the destination yields exactly the same pixels as
-// painting the mesh directly — provided the cache is rasterized at the same
-// sub-pixel phase. We achieve that by translating the cache context by
-// (m.x0 - dx0, m.y0 - dy0) and blitting at the integer device origin (dx0, dy0)
-// with a NEAREST filter, so device pixel positions match to the bit.
+// Horizontal box pass (radius r), clamp-to-edge, O(w) running sum. Separate src
+// and dst buffers (row-sequential reads and writes — cache friendly).
+static void BoxBlurH(const uint8_t* src, int sstride, uint8_t* dst, int dstride, int w, int h,
+                     int radius)
+{
+    const uint32_t win = 2u * (uint32_t)radius + 1u;
+    const uint32_t recip = BlurRecip(win);
+    for (int y = 0; y < h; ++y) {
+        const uint8_t* s = src + (size_t)y * sstride;
+        uint8_t* d = dst + (size_t)y * dstride;
+        uint32_t sum = 0;
+        for (int k = -radius; k <= radius; ++k)
+            sum += s[std::clamp(k, 0, w - 1)];
+        d[0] = (uint8_t)(((uint64_t)sum * recip) >> 24);
+        for (int x = 1; x < w; ++x) {
+            sum += s[std::clamp(x + radius, 0, w - 1)];
+            sum -= s[std::clamp(x - radius - 1, 0, w - 1)];
+            d[x] = (uint8_t)(((uint64_t)sum * recip) >> 24);
+        }
+    }
+}
+
+// Vertical box pass (radius r), clamp-to-edge. Maintains a per-column running sum
+// and walks output rows top-to-bottom, so all reads/writes are row-sequential
+// (no column striding). `colsum` is reused scratch (one uint32 per column).
+static void BoxBlurV(const uint8_t* src, int sstride, uint8_t* dst, int dstride, int w, int h,
+                     int radius, std::vector<uint32_t>& colsum)
+{
+    const uint32_t win = 2u * (uint32_t)radius + 1u;
+    const uint32_t recip = BlurRecip(win);
+    colsum.assign(w, 0);
+    for (int k = -radius; k <= radius; ++k) {
+        const uint8_t* s = src + (size_t)std::clamp(k, 0, h - 1) * sstride;
+        for (int x = 0; x < w; ++x)
+            colsum[x] += s[x];
+    }
+    for (int x = 0; x < w; ++x)
+        dst[x] = (uint8_t)(((uint64_t)colsum[x] * recip) >> 24);
+    for (int y = 1; y < h; ++y) {
+        const uint8_t* add = src + (size_t)std::clamp(y + radius, 0, h - 1) * sstride;
+        const uint8_t* sub = src + (size_t)std::clamp(y - radius - 1, 0, h - 1) * sstride;
+        uint8_t* d = dst + (size_t)y * dstride;
+        for (int x = 0; x < w; ++x) {
+            colsum[x] += add[x];
+            colsum[x] -= sub[x];
+            d[x] = (uint8_t)(((uint64_t)colsum[x] * recip) >> 24);
+        }
+    }
+}
+
+// Three integer box radii whose 3x application approximates a Gaussian of the
+// given sigma (Jarosz "fast almost-Gaussian filtering"); all boxes are odd-sized
+// so each is a symmetric radius.
+static void GaussBoxRadii(double sigma, int radii[3])
+{
+    const int n = 3;
+    double wIdeal = std::sqrt(12.0 * sigma * sigma / n + 1.0);
+    int wl = (int)std::floor(wIdeal);
+    if (wl % 2 == 0)
+        wl -= 1;
+    int wu = wl + 2;
+    double mIdeal =
+        (12.0 * sigma * sigma - n * (double)wl * wl - 4.0 * n * wl - 3.0 * n) / (-4.0 * wl - 4.0);
+    int m = (int)std::lround(mIdeal);
+    for (int i = 0; i < n; ++i)
+        radii[i] = (((i < m) ? wl : wu) - 1) / 2;
+}
+
+// Drop shadow: a 3x box-blur (~Gaussian, per the SVG feGaussianBlur recipe) of
+// the element shape, rasterized into a padded A8 surface and composited as a
+// coloured shadow via cairo_mask_surface(). 'a' is pre-baked with element opacity.
+// Cost is O(pixels) regardless of blur radius. Rendered per-frame for now.
 void Element::RenderDropShadow(cairo_t* ctx, double sx, double sy, double sw, double sh,
                                double blur, double r, double g, double b, double a,
                                float cornerR_in) const
@@ -138,50 +125,49 @@ void Element::RenderDropShadow(cairo_t* ctx, double sx, double sy, double sw, do
     if (a < 1e-6 || sw <= 0.0 || sh <= 0.0 || blur <= 0.0)
         return;
 
-    // Only the translation-only case is cached — always true for the shadow,
-    // which is drawn before any element scale/rotate/shear. Anything else falls
-    // back to direct rendering (correctness over caching).
-    cairo_matrix_t m;
-    cairo_get_matrix(ctx, &m);
-    if (m.xx != 1.0 || m.yy != 1.0 || m.xy != 0.0 || m.yx != 0.0) {
-        DrawDropShadow(ctx, sx, sy, sw, sh, blur, r, g, b, a, cornerR_in);
+    const double sigma = blur; // map shadow.blur -> Gaussian sigma
+    int radii[3];
+    GaussBoxRadii(sigma, radii);
+    const int pad = radii[0] + radii[1] + radii[2] + 1; // total blur spread + 1px safety
+
+    const int W = (int)std::ceil(sw) + 2 * pad;
+    const int H = (int)std::ceil(sh) + 2 * pad;
+    if (W <= 0 || H <= 0)
         return;
-    }
 
-    const double edgeThickness = blur * 2.0;
-    const double Lx0 = sx - edgeThickness; // mesh bbox top-left, element-local
-    const double Ly0 = sy - edgeThickness;
-    const double Lw = sw + 2.0 * edgeThickness;
-    const double Lh = sh + 2.0 * edgeThickness;
-
-    const double dx0 = std::floor(m.x0 + Lx0); // integer device origin of the bbox
-    const double dy0 = std::floor(m.y0 + Ly0);
-    const double tcx = m.x0 - dx0; // cache translation carries the sub-pixel phase
-    const double tcy = m.y0 - dy0;
-
-    const int wc = (int)std::ceil(Lw) + 2;
-    const int hc = (int)std::ceil(Lh) + 2;
-
-    ShadowCacheKey key{sw, sh, blur, (double)cornerR_in, r, g, b, a, tcx, tcy, wc, hc};
-    if (!m_shadowCache || !(m_shadowKey == key)) {
-        cairo_surface_t* cache = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, wc, hc);
-        cairo_t* cc = cairo_create(cache);
-        cairo_translate(cc, tcx, tcy);
-        DrawDropShadow(cc, sx, sy, sw, sh, blur, r, g, b, a, cornerR_in);
+    // Rasterize the shape into a padded A8 buffer, shape top-left at (pad, pad).
+    cairo_surface_t* a8 = cairo_image_surface_create(CAIRO_FORMAT_A8, W, H);
+    {
+        cairo_t* cc = cairo_create(a8);
+        cairo_translate(cc, pad - sx, pad - sy);
+        float cr = std::clamp(cornerR_in, 0.0f, (float)(std::min(sw, sh) / 2.0));
+        float rr[4] = {cr, cr, cr, cr};
+        RoundRect(cc, sx, sy, sw, sh, rr);
+        cairo_set_source_rgba(cc, 0, 0, 0, 1.0); // A8: only the alpha is stored
+        cairo_fill(cc);
         cairo_destroy(cc);
-        cairo_surface_flush(cache);
-        m_shadowCache = std::shared_ptr<cairo_surface_t>(cache, cairo_surface_destroy);
-        m_shadowKey = key;
     }
 
-    cairo_save(ctx);
-    cairo_identity_matrix(ctx);
-    cairo_set_source_surface(ctx, m_shadowCache.get(), dx0, dy0);
-    cairo_pattern_set_filter(cairo_get_source(ctx), CAIRO_FILTER_NEAREST);
-    cairo_rectangle(ctx, dx0, dy0, wc, hc);
-    cairo_clip(ctx);
-    cairo_paint(ctx);
-    cairo_restore(ctx);
+    cairo_surface_flush(a8);
+    uint8_t* data = cairo_image_surface_get_data(a8);
+    const int stride = cairo_image_surface_get_stride(a8);
+    // Ping-pong between the A8 surface and a tightly-packed scratch plane: each
+    // box blur is H (surface -> tmp) then V (tmp -> surface), so the result lands
+    // back in the surface after every box.
+    std::vector<uint8_t> tmp((size_t)W * H);
+    std::vector<uint32_t> colsum;
+    for (int i = 0; i < 3; ++i) {
+        BoxBlurH(data, stride, tmp.data(), W, W, H, radii[i]);
+        BoxBlurV(tmp.data(), W, data, stride, W, H, radii[i], colsum);
+    }
+    cairo_surface_mark_dirty(a8);
+
+    // Paint (r,g,b,a) through the blurred A8 mask, placing A8(0,0) at the shape's
+    // padded local origin so the shadow lands at (sx, sy) incl. its offset.
+    cairo_set_source_rgba(ctx, r, g, b, a);
+    cairo_mask_surface(ctx, a8, sx - pad, sy - pad);
+
+    cairo_surface_destroy(a8);
 }
 
 static void RoundRect(cairo_t* ctx, double x, double y, double w, double h, const float r[4])
