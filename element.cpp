@@ -180,8 +180,17 @@ void Element::Render(cairo_t* ctx, const AnimatedTransform& xf,
     double cx = bounds.width / 2.0;
     double cy = bounds.height / 2.0;
 
-    // Composite group: self content + children share this opacity layer
-    cairo_push_group(ctx);
+    // Composite group: self content + children share this opacity layer.
+    // Skipped for fully-opaque, childless elements: OVER compositing is
+    // associative, so drawing self content straight onto the destination
+    // matches grouping it and painting back at alpha 1.0 — at a fraction of the
+    // cost (no full-size intermediate group surface per element per frame).
+    // Note: not bit-identical at antialiased edges, since the group otherwise
+    // adds an extra 8-bit quantization step on fractional-coverage pixels;
+    // interiors are unchanged.
+    const bool useGroup = !children.empty() || (double)opacity * xf.opacity < 1.0;
+    if (useGroup)
+        cairo_push_group(ctx);
 
     // Self content — full clip (corner radius + wipe + mask) inside save/restore
     // so it never bleeds into the children rendering below.
@@ -479,8 +488,10 @@ void Element::Render(cairo_t* ctx, const AnimatedTransform& xf,
         cairo_restore(ctx);
     }
 
-    cairo_pop_group_to_source(ctx);
-    cairo_paint_with_alpha(ctx, opacity * xf.opacity);
+    if (useGroup) {
+        cairo_pop_group_to_source(ctx);
+        cairo_paint_with_alpha(ctx, opacity * xf.opacity);
+    }
 }
 
 void Element::ApplyClipping(cairo_t* ctx, const AnimatedTransform& xf,
