@@ -1,3 +1,7 @@
+// Adapted from https://github.com/nth-eye/qr
+// Original work Copyright (c) nth-eye contributors — BSD-3-Clause
+// Modifications Copyright (c) 2026 Diego Lopes <diego95lopes@gmail.com> — MIT
+
 #pragma once
 
 #include <cstdint>

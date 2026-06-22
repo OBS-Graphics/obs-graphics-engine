@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Diego Lopes <diego95lopes@gmail.com>
+
 #include "data-source.h"
 
 #include <nlohmann/json.hpp>
