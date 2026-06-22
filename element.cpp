@@ -120,6 +120,70 @@ static void DrawDropShadow(cairo_t* ctx, double ox, double oy, double sw, double
     cairo_pattern_destroy(pat);
 }
 
+// Cached drop shadow. The mesh rasterization (the expensive part) is rendered
+// once into an offscreen ARGB32 surface and blitted every frame, recomputed only
+// when geometry/colour/opacity or the sub-pixel phase changes.
+//
+// Bit-identity: the shadow is a single mesh paint, so rendering it over a
+// transparent cache (OVER a transparent dest is exact, no quantization) and then
+// compositing that cache OVER the destination yields exactly the same pixels as
+// painting the mesh directly — provided the cache is rasterized at the same
+// sub-pixel phase. We achieve that by translating the cache context by
+// (m.x0 - dx0, m.y0 - dy0) and blitting at the integer device origin (dx0, dy0)
+// with a NEAREST filter, so device pixel positions match to the bit.
+void Element::RenderDropShadow(cairo_t* ctx, double sx, double sy, double sw, double sh,
+                               double blur, double r, double g, double b, double a,
+                               float cornerR_in) const
+{
+    if (a < 1e-6 || sw <= 0.0 || sh <= 0.0 || blur <= 0.0)
+        return;
+
+    // Only the translation-only case is cached — always true for the shadow,
+    // which is drawn before any element scale/rotate/shear. Anything else falls
+    // back to direct rendering (correctness over caching).
+    cairo_matrix_t m;
+    cairo_get_matrix(ctx, &m);
+    if (m.xx != 1.0 || m.yy != 1.0 || m.xy != 0.0 || m.yx != 0.0) {
+        DrawDropShadow(ctx, sx, sy, sw, sh, blur, r, g, b, a, cornerR_in);
+        return;
+    }
+
+    const double edgeThickness = blur * 2.0;
+    const double Lx0 = sx - edgeThickness; // mesh bbox top-left, element-local
+    const double Ly0 = sy - edgeThickness;
+    const double Lw = sw + 2.0 * edgeThickness;
+    const double Lh = sh + 2.0 * edgeThickness;
+
+    const double dx0 = std::floor(m.x0 + Lx0); // integer device origin of the bbox
+    const double dy0 = std::floor(m.y0 + Ly0);
+    const double tcx = m.x0 - dx0; // cache translation carries the sub-pixel phase
+    const double tcy = m.y0 - dy0;
+
+    const int wc = (int)std::ceil(Lw) + 2;
+    const int hc = (int)std::ceil(Lh) + 2;
+
+    ShadowCacheKey key{sw, sh, blur, (double)cornerR_in, r, g, b, a, tcx, tcy, wc, hc};
+    if (!m_shadowCache || !(m_shadowKey == key)) {
+        cairo_surface_t* cache = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, wc, hc);
+        cairo_t* cc = cairo_create(cache);
+        cairo_translate(cc, tcx, tcy);
+        DrawDropShadow(cc, sx, sy, sw, sh, blur, r, g, b, a, cornerR_in);
+        cairo_destroy(cc);
+        cairo_surface_flush(cache);
+        m_shadowCache = std::shared_ptr<cairo_surface_t>(cache, cairo_surface_destroy);
+        m_shadowKey = key;
+    }
+
+    cairo_save(ctx);
+    cairo_identity_matrix(ctx);
+    cairo_set_source_surface(ctx, m_shadowCache.get(), dx0, dy0);
+    cairo_pattern_set_filter(cairo_get_source(ctx), CAIRO_FILTER_NEAREST);
+    cairo_rectangle(ctx, dx0, dy0, wc, hc);
+    cairo_clip(ctx);
+    cairo_paint(ctx);
+    cairo_restore(ctx);
+}
+
 static void RoundRect(cairo_t* ctx, double x, double y, double w, double h, const float r[4])
 {
     double tl = r[0], tr = r[1], br = r[2], bl = r[3];
@@ -162,9 +226,9 @@ void Element::Render(cairo_t* ctx, const AnimatedTransform& xf,
         }
         float cr = *std::min_element(cornerRadius, cornerRadius + 4);
         cairo_save(ctx);
-        DrawDropShadow(ctx, sx, sy, sw, sh, (double)shadow.blur,
-                       shadow.color[0], shadow.color[1], shadow.color[2],
-                       shadow.color[3] * (double)(opacity * xf.opacity), cr);
+        RenderDropShadow(ctx, sx, sy, sw, sh, (double)shadow.blur,
+                         shadow.color[0], shadow.color[1], shadow.color[2],
+                         shadow.color[3] * (double)(opacity * xf.opacity), cr);
         cairo_restore(ctx);
     }
 

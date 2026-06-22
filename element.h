@@ -116,8 +116,25 @@ struct Element {
     Point GetGlobalPosition() const;
 
 private:
+    // Renders the drop shadow, caching the (expensive) mesh rasterization to an
+    // offscreen surface keyed on geometry/colour/sub-pixel-phase, and blitting
+    // it each frame. Bit-identical to drawing the mesh directly.
+    void RenderDropShadow(cairo_t* ctx, double sx, double sy, double sw, double sh,
+                          double blur, double r, double g, double b, double a,
+                          float cornerR) const;
+
+    struct ShadowCacheKey {
+        double sw{-1}, sh{-1}, blur{-1}, cornerR{-1};
+        double r{0}, g{0}, b{0}, a{-1};
+        double tcx{0}, tcy{0}; // sub-pixel phase of the cached surface
+        int wc{-1}, hc{-1};
+        bool operator==(const ShadowCacheKey&) const = default;
+    };
+
     mutable std::string m_oldText{"\xff"};
     mutable qr::DynQr m_qr{};
     mutable std::shared_ptr<cairo_surface_t> m_image{};
     mutable std::string m_imageCachePath{};
+    mutable std::shared_ptr<cairo_surface_t> m_shadowCache{};
+    mutable ShadowCacheKey m_shadowKey{};
 };
