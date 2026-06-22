@@ -758,7 +758,7 @@ int Qr<V>::rule_1_3_score()
         int finder = color;
         int cnt    = 1;
         for (int x = 1; x < x_max; x += x_step) {
-            if (get_arr_bit(code, y + x) == color) {
+            if (static_cast<bool>(get_arr_bit(code, y + x)) == color) {
                 ++cnt;
                 if (cnt == 5)
                     res += 3;
@@ -769,7 +769,7 @@ int Qr<V>::rule_1_3_score()
                 cnt = 1;
             }
             // Finder-like
-            finder = ((finder << 1) & 0x7ff) | color;
+            finder = ((finder << 1) & 0x7ff) | static_cast<int>(color);
             if (x >= x_step * 10) {
                 if (finder == 0x05d || finder == 0x5d0)
                     res += 40;
@@ -792,9 +792,9 @@ int Qr<V>::penalty_score()
 
             bool c = get_arr_bit(code, y + x);
 
-            if (c == get_arr_bit(code, y + x + 1)  &&
-                c == get_arr_bit(code, y + x + SIDE) &&
-                c == get_arr_bit(code, y + x + SIDE + 1))
+            if (c == static_cast<bool>(get_arr_bit(code, y + x + 1))  &&
+                c == static_cast<bool>(get_arr_bit(code, y + x + SIDE)) &&
+                c == static_cast<bool>(get_arr_bit(code, y + x + SIDE + 1)))
                 res += 3;
         }
     }
