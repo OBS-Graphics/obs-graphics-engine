@@ -19,28 +19,24 @@ AnimatedTransform EvaluateAnimation(const AnimationDef& def, double timer, bool 
         out.opacity = isOut ? rp : p;
     };
 
-    auto fnSlide = [&](double& out, double max, bool flip = false) {
-        out = (isOut ? p : rp) * (flip ? -1.0 : 1.0) * max;
-    };
-
     switch (def.type) {
     case AnimationType::None:
         break;
     case AnimationType::Fade: fnFade(); break;
     case AnimationType::SlideUp:
-        fnSlide(out.offsetY, el.bounds.height);
+        out.offsetY = (isOut ? -p : rp) * el.bounds.height;
         fnFade();
         break;
     case AnimationType::SlideDown:
-        fnSlide(out.offsetY, el.bounds.height, true);
+        out.offsetY = (isOut ? p : -rp) * el.bounds.height;
         fnFade();
         break;
     case AnimationType::SlideLeft:
-        fnSlide(out.offsetX, el.bounds.width);
+        out.offsetX = (isOut ? p : -rp) * el.bounds.width;
         fnFade();
         break;
     case AnimationType::SlideRight:
-        fnSlide(out.offsetX, el.bounds.width, true);
+        out.offsetX = (isOut ? -p : rp) * el.bounds.width;
         fnFade();
         break;
     case AnimationType::WipeUp:
@@ -60,8 +56,8 @@ AnimatedTransform EvaluateAnimation(const AnimationDef& def, double timer, bool 
         out.clipW = isOut ? rp : p;
         break;
     case AnimationType::ScaleIn:
-        fnFade();
         out.scale = isOut ? rp : p;
+        fnFade();
         break;
     }
 
