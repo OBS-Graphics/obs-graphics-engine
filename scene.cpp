@@ -169,6 +169,7 @@ static ScaleMode ParseScaleMode(const std::string& s)
     if (s == "fit_width")  return ScaleMode::FitWidth;
     if (s == "fit_height") return ScaleMode::FitHeight;
     if (s == "none")       return ScaleMode::None;
+    if (s == "tile")       return ScaleMode::Tile;
     return ScaleMode::Stretch;
 }
 
@@ -188,7 +189,10 @@ static Paint ParsePaint(const json& v)
         std::string type = v.value("type", "");
 
         if (type == "image") {
-            return Paint::Image(v.value("path", ""));
+            Paint p = Paint::Image(v.value("path", ""));
+            p.imageScaleMode = ParseScaleMode(v.value("scale_mode", "stretch"));
+            p.tileScale = v.value("tile_scale", 1.0);
+            return p;
         }
 
         Paint p = (type == "radial")
@@ -257,6 +261,7 @@ static Element ParseElement(const json& j)
     el.font.weight = ParseFontWeight(j.value("font_weight", "normal"));
     el.imagePath = j.value("image_path", "");
     el.imageScaleMode = ParseScaleMode(j.value("scale_mode", "stretch"));
+    el.imageTileScale = j.value("image_tile_scale", 1.0);
     el.textStyle.autoScale = j.value("auto_scale", false);
     el.textStyle.alignX = ParseHAlignment(j.value("text_align_x", "left"));
     el.textStyle.alignY = ParseVAlignment(j.value("text_align_y", "top"));

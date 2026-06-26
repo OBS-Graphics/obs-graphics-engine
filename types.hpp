@@ -9,13 +9,16 @@
 #include <cairo/cairo.h>
 #endif
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
+#include <numbers>
 #include <string>
 #include <vector>
-#include <numbers>
 
 constexpr double Pi = std::numbers::pi;
+
+enum class ScaleMode { Stretch, Contain, Cover, FitWidth, FitHeight, None, Tile };
 
 struct Point {
     double x, y;
@@ -36,6 +39,8 @@ struct Paint {
     double params[6]{};
     std::string imagePath{};
     std::vector<Stop> stops;
+    ScaleMode imageScaleMode{ScaleMode::Stretch};
+    double tileScale{1.0};
 
     Paint() = default;
 
@@ -114,9 +119,51 @@ struct Paint {
             int sw = cairo_image_surface_get_width(surface);
             int sh = cairo_image_surface_get_height(surface);
             if (sw <= 0 || sh <= 0) return;
+
             cairo_pattern_t* pat = cairo_pattern_create_for_surface(surface);
             cairo_matrix_t m;
-            cairo_matrix_init_scale(&m, (double)sw / w, (double)sh / h);
+
+            if (imageScaleMode == ScaleMode::Tile) {
+                double ts = (tileScale > 1e-9) ? tileScale : 1.0;
+                cairo_matrix_init_scale(&m, 1.0 / ts, 1.0 / ts);
+                cairo_pattern_set_extend(pat, CAIRO_EXTEND_REPEAT);
+            } else {
+                double ox = 0.0, oy = 0.0, s = 1.0;
+                switch (imageScaleMode) {
+                case ScaleMode::Contain:
+                    s = std::min(w / sw, h / sh);
+                    ox = (w - sw * s) / 2.0;
+                    oy = (h - sh * s) / 2.0;
+                    break;
+                case ScaleMode::Cover:
+                    s = std::max(w / sw, h / sh);
+                    ox = (w - sw * s) / 2.0;
+                    oy = (h - sh * s) / 2.0;
+                    break;
+                case ScaleMode::FitWidth:
+                    s = w / sw;
+                    oy = (h - sh * s) / 2.0;
+                    break;
+                case ScaleMode::FitHeight:
+                    s = h / sh;
+                    ox = (w - sw * s) / 2.0;
+                    break;
+                case ScaleMode::None:
+                    s = 1.0;
+                    ox = (w - sw) / 2.0;
+                    oy = (h - sh) / 2.0;
+                    break;
+                default: // Stretch
+                    cairo_matrix_init(&m, (double)sw / w, 0, 0, (double)sh / h, 0, 0);
+                    cairo_pattern_set_matrix(pat, &m);
+                    cairo_set_source(cr, pat);
+                    cairo_pattern_destroy(pat);
+                    return;
+                }
+                // All non-Stretch, non-Tile modes: uniform scale s with centering offset
+                cairo_matrix_init(&m, 1.0 / s, 0, 0, 1.0 / s, -ox / s, -oy / s);
+            }
+
             cairo_pattern_set_matrix(pat, &m);
             cairo_set_source(cr, pat);
             cairo_pattern_destroy(pat);

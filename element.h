@@ -49,8 +49,6 @@ enum class WrapMode {
 
 enum class TextTransform { None = 0, Capitalize, Uppercase, Lowercase };
 
-enum class ScaleMode { Stretch, Contain, Cover, FitWidth, FitHeight, None };
-
 struct Element {
     std::string id;
     ElementType type;
@@ -99,6 +97,7 @@ struct Element {
 
     std::string imagePath{};
     ScaleMode imageScaleMode{ScaleMode::Stretch};
+    double imageTileScale{1.0};
 
     struct DropShadow {
         bool enabled{false};
