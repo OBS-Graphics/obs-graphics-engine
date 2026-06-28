@@ -41,9 +41,22 @@ public:
                        const AnimatedTransform* maskXf,
                        double parentOffX, double parentOffY) const override;
 
-    virtual void SetContent(const std::string& value) {}
+    // Triggers data-change animation; subclasses override ApplyContent instead.
+    virtual void SetContent(const std::string& value) final;
+
+    // Called by Title::Tick() while Visible to advance data-change animation state.
+    void TickData(float dt);
 
 protected:
+    virtual void ApplyContent(const std::string& value) {}
     virtual void RenderContent(cairo_t* ctx) const = 0;
     void ApplyFillAndStroke(cairo_t* ctx) const;
+
+private:
+    enum class DataAnimState { Idle, AnimatingOut, AnimatingIn };
+    mutable DataAnimState m_dataAnimState{DataAnimState::Idle};
+    mutable double m_dataAnimTimer{0.0};
+    mutable std::string m_currentContent;
+    mutable std::string m_pendingContent;
+    mutable bool m_contentEverSet{false};
 };

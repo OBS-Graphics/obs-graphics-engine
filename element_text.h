@@ -64,7 +64,7 @@ public:
         TextTransform transform{TextTransform::None};
     } textStyle{};
 
-    void SetContent(const std::string& value) override { text = value; }
+    void ApplyContent(const std::string& value) override { text = value; }
 
 protected:
     void RenderContent(cairo_t* ctx) const override;

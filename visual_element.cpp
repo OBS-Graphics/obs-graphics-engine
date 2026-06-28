@@ -6,25 +6,95 @@
 
 #include <algorithm>
 
+// ── Data-change animation ─────────────────────────────────────────────────────
+
+void VisualElement::SetContent(const std::string& value)
+{
+    if (m_contentEverSet && value == m_currentContent) return;
+
+    if (dataOutAnimation.type != AnimationType::None && m_contentEverSet) {
+        m_pendingContent   = value;
+        m_dataAnimState    = DataAnimState::AnimatingOut;
+        m_dataAnimTimer    = 0.0;
+    } else {
+        m_currentContent = value;
+        ApplyContent(value);
+        m_contentEverSet = true;
+        if (dataInAnimation.type != AnimationType::None) {
+            m_dataAnimState  = DataAnimState::AnimatingIn;
+            m_dataAnimTimer  = 0.0;
+        }
+    }
+}
+
+void VisualElement::TickData(float dt)
+{
+    if (m_dataAnimState == DataAnimState::Idle) return;
+    m_dataAnimTimer += dt;
+
+    if (m_dataAnimState == DataAnimState::AnimatingOut) {
+        float total = dataOutAnimation.delay + dataOutAnimation.duration;
+        if (m_dataAnimTimer >= total) {
+            m_currentContent = m_pendingContent;
+            ApplyContent(m_pendingContent);
+            m_contentEverSet = true;
+            m_pendingContent.clear();
+            m_dataAnimTimer = 0.0;
+            m_dataAnimState = (dataInAnimation.type != AnimationType::None)
+                                  ? DataAnimState::AnimatingIn
+                                  : DataAnimState::Idle;
+        }
+    } else if (m_dataAnimState == DataAnimState::AnimatingIn) {
+        float total = dataInAnimation.delay + dataInAnimation.duration;
+        if (m_dataAnimTimer >= total)
+            m_dataAnimState = DataAnimState::Idle;
+    }
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+
 void VisualElement::Render(cairo_t* ctx, const AnimatedTransform& xf,
                            const AnimatedTransform* maskXf,
                            double timer, bool isOut,
                            double parentOffX, double parentOffY) const
 {
-    if (opacity * xf.opacity < 1e-6f)
+    // Compose graphic-level xf with per-element data-change animation xf
+    AnimatedTransform effectiveXf = xf;
+    if (m_dataAnimState != DataAnimState::Idle) {
+        bool dataIsOut = (m_dataAnimState == DataAnimState::AnimatingOut);
+        const auto& dataDef = dataIsOut ? dataOutAnimation : dataInAnimation;
+        AnimatedTransform dataXf = animation::EvaluateAnimation(
+            dataDef, m_dataAnimTimer, dataIsOut, m_bounds.width, m_bounds.height);
+
+        effectiveXf.opacity *= dataXf.opacity;
+        effectiveXf.offsetX += dataXf.offsetX;
+        effectiveXf.offsetY += dataXf.offsetY;
+        effectiveXf.scale   *= dataXf.scale;
+        // Data wipe overrides graphic wipe when active
+        if (dataXf.clipW < 1.0 || dataXf.clipH < 1.0 ||
+            dataXf.clipX > 0.0 || dataXf.clipY > 0.0) {
+            effectiveXf.clipX = dataXf.clipX;
+            effectiveXf.clipY = dataXf.clipY;
+            effectiveXf.clipW = dataXf.clipW;
+            effectiveXf.clipH = dataXf.clipH;
+        }
+    }
+
+    if (opacity * effectiveXf.opacity < 1e-6f)
         return;
 
-    cairo_translate(ctx, xf.offsetX, xf.offsetY);
+    cairo_translate(ctx, effectiveXf.offsetX, effectiveXf.offsetY);
 
-    const bool isWiping = xf.clipX > 0.0 || xf.clipY > 0.0 || xf.clipW < 1.0 || xf.clipH < 1.0;
+    const bool isWiping = effectiveXf.clipX > 0.0 || effectiveXf.clipY > 0.0 ||
+                          effectiveXf.clipW < 1.0  || effectiveXf.clipH < 1.0;
 
     if (shadow.enabled) {
         double sx, sy, sw, sh;
         if (isWiping) {
-            sx = xf.clipX * m_bounds.width  + shadow.offsetX;
-            sy = xf.clipY * m_bounds.height + shadow.offsetY;
-            sw = xf.clipW * m_bounds.width;
-            sh = xf.clipH * m_bounds.height;
+            sx = effectiveXf.clipX * m_bounds.width  + shadow.offsetX;
+            sy = effectiveXf.clipY * m_bounds.height + shadow.offsetY;
+            sw = effectiveXf.clipW * m_bounds.width;
+            sh = effectiveXf.clipH * m_bounds.height;
         } else {
             sx = shadow.offsetX;
             sy = shadow.offsetY;
@@ -35,22 +105,22 @@ void VisualElement::Render(cairo_t* ctx, const AnimatedTransform& xf,
         cairo_save(ctx);
         render::RenderDropShadow(ctx, sx, sy, sw, sh, shadow.blur,
                                  shadow.color[0], shadow.color[1], shadow.color[2],
-                                 shadow.color[3] * (double)(opacity * xf.opacity), cr);
+                                 shadow.color[3] * (double)(opacity * effectiveXf.opacity), cr);
         cairo_restore(ctx);
     }
 
     if (isWiping) {
         cairo_rectangle(ctx, 0, 0, m_bounds.width, m_bounds.height);
         cairo_clip(ctx);
-        cairo_rectangle(ctx, xf.clipX * m_bounds.width, xf.clipY * m_bounds.height,
-                        xf.clipW * m_bounds.width, xf.clipH * m_bounds.height);
+        cairo_rectangle(ctx, effectiveXf.clipX * m_bounds.width, effectiveXf.clipY * m_bounds.height,
+                        effectiveXf.clipW * m_bounds.width, effectiveXf.clipH * m_bounds.height);
         cairo_clip(ctx);
     }
 
     double cx = m_bounds.width / 2.0;
     double cy = m_bounds.height / 2.0;
 
-    const bool useGroup = !m_children.empty() || (double)opacity * xf.opacity < 1.0;
+    const bool useGroup = !m_children.empty() || (double)opacity * effectiveXf.opacity < 1.0;
     if (useGroup)
         cairo_push_group(ctx);
 
@@ -64,11 +134,11 @@ void VisualElement::Render(cairo_t* ctx, const AnimatedTransform& xf,
         cairo_translate(ctx, -cx, -cy);
     }
 
-    ApplyClipping(ctx, xf, maskXf, parentOffX, parentOffY);
+    ApplyClipping(ctx, effectiveXf, maskXf, parentOffX, parentOffY);
 
-    if (xf.scale != 1.0 && xf.scale > 1e-6) {
+    if (effectiveXf.scale != 1.0 && effectiveXf.scale > 1e-6) {
         cairo_translate(ctx, cx, cy);
-        cairo_scale(ctx, xf.scale, xf.scale);
+        cairo_scale(ctx, effectiveXf.scale, effectiveXf.scale);
         cairo_translate(ctx, -cx, -cy);
     }
 
@@ -111,7 +181,7 @@ void VisualElement::Render(cairo_t* ctx, const AnimatedTransform& xf,
             cairo_save(ctx);
             cairo_translate(ctx, child->GetPosition().x, child->GetPosition().y);
             child->Render(ctx, childXf, childMaskXf, timer, isOut,
-                          parentOffX + xf.offsetX, parentOffY + xf.offsetY);
+                          parentOffX + effectiveXf.offsetX, parentOffY + effectiveXf.offsetY);
             cairo_restore(ctx);
         }
         cairo_restore(ctx);
@@ -119,7 +189,7 @@ void VisualElement::Render(cairo_t* ctx, const AnimatedTransform& xf,
 
     if (useGroup) {
         cairo_pop_group_to_source(ctx);
-        cairo_paint_with_alpha(ctx, opacity * xf.opacity);
+        cairo_paint_with_alpha(ctx, opacity * effectiveXf.opacity);
     }
 }
 
@@ -159,15 +229,13 @@ void VisualElement::ApplyClipping(cairo_t* ctx, const AnimatedTransform& xf,
 
 void VisualElement::ApplyFillAndStroke(cairo_t* ctx) const
 {
-    bool hasFill = fill.Valid();
+    bool hasFill   = fill.Valid();
     bool hasStroke = stroke.Valid() && strokeWidth > 0.0f;
 
     if (hasFill) {
         fill.Apply(ctx, m_bounds.width, m_bounds.height);
-        if (hasStroke)
-            cairo_fill_preserve(ctx);
-        else
-            cairo_fill(ctx);
+        if (hasStroke) cairo_fill_preserve(ctx);
+        else           cairo_fill(ctx);
     }
 
     if (hasStroke) {

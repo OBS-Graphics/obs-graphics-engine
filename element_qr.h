@@ -11,7 +11,7 @@ class QrElement : public VisualElement {
 public:
     std::string text;
 
-    void SetContent(const std::string& value) override { text = value; }
+    void ApplyContent(const std::string& value) override { text = value; }
 
 protected:
     void RenderContent(cairo_t* ctx) const override;

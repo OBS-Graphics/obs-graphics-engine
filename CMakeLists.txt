@@ -62,6 +62,13 @@ CPMAddPackage(
     DOWNLOAD_ONLY YES
 )
 
+CPMAddPackage(
+    NAME cpp_zipper
+    GITHUB_REPOSITORY yhirose/cpp-zipper
+    GIT_TAG master
+    DOWNLOAD_ONLY YES
+)
+
 add_library(engine STATIC
     element.cpp
     spatial.cpp
@@ -72,8 +79,7 @@ add_library(engine STATIC
     element_qr.cpp
     render_util.cpp
     animation.cpp
-    graphic.cpp
-    scene.cpp
+    title.cpp
     data-source.cpp
     script.cpp
     qr.cpp
@@ -86,6 +92,14 @@ target_include_directories(engine PUBLIC
 
 if (stb_ADDED)
     target_include_directories(engine PRIVATE ${stb_SOURCE_DIR})
+endif()
+
+pkg_check_modules(MINIZIP REQUIRED IMPORTED_TARGET minizip)
+
+if (cpp_zipper_ADDED)
+    add_library(cpp_zipper INTERFACE IMPORTED)
+    target_include_directories(cpp_zipper INTERFACE ${cpp_zipper_SOURCE_DIR})
+    target_link_libraries(engine PUBLIC cpp_zipper PkgConfig::MINIZIP)
 endif()
 
 target_link_libraries(engine PUBLIC

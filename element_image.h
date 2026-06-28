@@ -13,7 +13,7 @@ public:
     ScaleMode imageScaleMode{ScaleMode::Stretch};
     double imageTileScale{1.0};
 
-    void SetContent(const std::string& value) override { imagePath = value; }
+    void ApplyContent(const std::string& value) override { imagePath = value; }
 
 protected:
     void RenderContent(cairo_t* ctx) const override;

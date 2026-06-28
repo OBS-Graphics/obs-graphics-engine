@@ -9,17 +9,16 @@ cmake -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j$(nproc)
 ```
 
-sol2 is fetched automatically by CPM at configure time.
+sol2, cpp-zipper, and nlohmann/json are fetched automatically by CPM at configure time. cpp-zipper wraps system minizip (`libminizip-dev` must be installed).
 
 ## Source files
 
 All sources live at repo root (no `src/` subdirectory):
 
-- `scene.h/cpp` — `Scene` struct + JSON load/save
-- `graphic.h/cpp` — `Graphic` state machine + render
+- `title.h/cpp` — `Title` struct: state machine, render, load/save `.ogt`
 - `element.h/cpp` — `IElement` base class (parent/child tree management)
 - `spatial.h/cpp` — `Spatial : IElement` — adds bounds, rotation, shear, world-position tracking
-- `visual_element.h/cpp` — `VisualElement : Spatial` — common rendering (shadow, clip, opacity group, children); pure virtual `RenderContent`
+- `visual_element.h/cpp` — `VisualElement : Spatial` — common rendering (shadow, clip, opacity group, children, data-change animation); pure virtual `RenderContent`
 - `element_rectangle.h/cpp` — `RectangleElement : VisualElement`
 - `element_text.h/cpp` — `TextElement : VisualElement`; also owns all text/font enums
 - `element_image.h/cpp` — `ImageElement : VisualElement`
@@ -44,15 +43,15 @@ IElement          (element.h)     — id, parent/child tree, virtual Render/Appl
             └─ QrElement          (element_qr.h)
 ```
 
-`Graphic::elements` is `std::vector<std::unique_ptr<VisualElement>>`.
+`Title::elements` is `std::vector<std::unique_ptr<IElement>>`. `elements[0]` is always the auto-created root (`IElement` with id `"__root"`). All other entries are `VisualElement` subclasses.
 
 ## Key types
 
 **`IElement`** — Base interface. Manages the parent/child tree via `AddChild`/`RemoveChild`/`SetParent`. `AddChild(child)` calls `child->SetParent(this)`; `RemoveChild(child)` calls `child->SetParent(nullptr)`. Internal list manipulation uses `AddChildDirect`/`RemoveChildDirect` to avoid recursion.
 
-**`Spatial`** — Adds `m_bounds` (local position + size), `m_rotation`, `m_shearX/Y`. Overrides `SetParent` to adjust `m_bounds.x/y` so the element's **world position is preserved** when reparented: saves `GetGlobalPosition()` before changing parent, then subtracts the new parent's world position. When loading from JSON (where x/y are local), `scene.cpp` temporarily converts to world coords before calling `AddChild` so SetParent's subtraction is a net no-op.
+**`Spatial`** — Adds `m_bounds` (local position + size), `m_rotation`, `m_shearX/Y`. Overrides `SetParent` to adjust `m_bounds.x/y` so the element's **world position is preserved** when reparented: saves `GetGlobalPosition()` before changing parent, then subtracts the new parent's world position. When loading from JSON (where x/y are local), `title.cpp` temporarily converts to world coords before calling `AddChild` so SetParent's subtraction is a net no-op.
 
-**`VisualElement`** — All renderable properties: `fill`, `stroke`, `strokeWidth`, `cornerRadius[4]`, `opacity`, `mask`, `shadow{}`, `inAnimation`/`outAnimation`, `zOrder`, `fitToChildren`. Provides `Render()` (common pipeline: shadow → wipe clip → opacity group → shear → content → children) and abstract `RenderContent(ctx)`. `SetContent(value)` is virtual — overridden by TextElement (sets `text`), ImageElement (sets `imagePath`), QrElement (sets `text`); used by `Graphic::UpdateData` for data-source binding without type switches.
+**`VisualElement`** — All renderable properties: `fill`, `stroke`, `strokeWidth`, `cornerRadius[4]`, `opacity`, `mask`, `shadow{}`, `inAnimation`/`outAnimation`, `dataInAnimation`/`dataOutAnimation`, `zOrder`, `fitToChildren`. Provides `Render()` (common pipeline: shadow → wipe clip → opacity group → shear → content → children). `SetContent(value)` is **final** — it is a no-op if the value hasn't changed, otherwise drives the data-change animation state machine and calls `ApplyContent(value)` at the right moment. Subclasses override `ApplyContent` instead.
 
 **`Paint`** — Fill or stroke. `type` = Solid / Linear / Radial / Image. Params layout:
 - Solid: `params[0..3]` = r,g,b,a
@@ -65,11 +64,47 @@ IElement          (element.h)     — id, parent/child tree, virtual Render/Appl
 - `LoadImageSurface(path)` — stb_image → premultiplied ARGB32 Cairo surface
 - `RenderDropShadow(...)` — 3× separable box-blur (≈Gaussian) of the element shape on an A8 surface, composited as a coloured shadow via `cairo_mask_surface()`. O(pixels) regardless of blur radius. `blur` maps directly to Gaussian sigma via `GaussBoxRadii`.
 
-**`Graphic`** — Named group of elements. State machine: `Hidden → AnimatingIn → Visible → AnimatingOut → Hidden`. `Tick(dt)` advances the timer; `Render(cr)` draws root elements sorted by `zOrder`. `UpdateData()` calls `el->SetContent(value)` via virtual dispatch.
+**`Title`** — Standalone presentation unit. Holds `width`/`height`, an elements vector (root at [0], VisualElements at [1..]), and a state machine: `Hidden → AnimatingIn → Visible → AnimatingOut → Hidden`. `Tick(dt)` advances the animation timer and, while Visible, calls `TickData(dt)` on each VisualElement to drive per-element data-change animations. `Render(cr)` draws direct children of root sorted by `zOrder`. Loads/saves as `.ogt` (zip archive, see below).
 
-**`Scene`** — `width`/`height` + `std::vector<Graphic>`. Load via `Scene::Load(path)` or `Scene::LoadString(json)`.
+**`AnimationDef` / `AnimatedTransform`** — In/out animation per element. `animation::EvaluateAnimation(def, t, isOut, width, height)` returns an `AnimatedTransform` (offset, scale, opacity, clip rect). Out animations are true reversals. Per-element data-change animations are stored in `dataInAnimation`/`dataOutAnimation` and driven by `VisualElement::TickData`.
 
-**`AnimationDef` / `AnimatedTransform`** — In/out animation per element. `animation::EvaluateAnimation(def, t, isOut, width, height)` returns an `AnimatedTransform` (offset, scale, opacity, clip rect). Out animations are true reversals.
+## .ogt file format
+
+Each Title is saved as a `.ogt` file — a ZIP archive with this layout:
+
+```
+my_title.ogt  (ZIP)
+├── title.json          — title definition
+├── thumb.png           — optional preview thumbnail
+└── ASSETS/
+    ├── logo.png
+    └── bg.jpg
+```
+
+**Asset path convention in title.json** — paths starting with `@` refer to bundled assets:
+- `"@logo.png"` → `ASSETS/logo.png` inside the zip
+- Any other string → absolute or relative path on the local filesystem (not bundled)
+
+On `Title::Load`: bundled assets are extracted to a system temp directory for the life of the Title object. On `Title::~Title`: the temp directory is removed.
+
+On `Title::Save`: all referenced asset files (whether `@`-prefixed or local paths) are copied into `ASSETS/` and paths are rewritten as `@basename` in the JSON.
+
+## title.json schema
+
+```json
+{
+  "id": "lower_third",
+  "width": 1920,
+  "height": 1080,
+  "elements": [
+    { "type": "rectangle", "id": "bg", "x": 0, "y": 0, "w": 800, "h": 100 },
+    { "type": "image", "id": "logo", "image_path": "@logo.png" },
+    { "type": "text", "id": "name", "parent": "bg", "x": 10, "y": 10 }
+  ]
+}
+```
+
+The root element (`"__root"`) is **not** serialized. Elements without a `parent` field are automatically parented to root on load.
 
 ## JSON schema (element fields)
 
@@ -77,7 +112,7 @@ IElement          (element.h)     — id, parent/child tree, virtual Render/Appl
 |---|---|---|
 | `type` | string | `"rectangle"`, `"text"`, `"image"`, `"qr_code"` |
 | `x`, `y`, `w`, `h` | float | Bounds — **local (parent-relative)** when `parent` is set |
-| `image_path` | string | Image file path (PNG, JPEG, etc.) for Image element |
+| `image_path` | string | Image file path or `@name` for bundled asset |
 | `scale_mode` | string | `"stretch"` (default), `"contain"`, `"cover"`, `"fit_width"`, `"fit_height"`, `"none"`, `"tile"` |
 | `fill` / `stroke` | array, object, or string | Array = solid RGBA; object = linear/radial/image gradient; string = image path |
 | `text_align_x` | string | `"left"`, `"center"`, `"right"`, `"justify"` |
@@ -90,7 +125,9 @@ IElement          (element.h)     — id, parent/child tree, virtual Render/Appl
 | `shear_y` | float | Vertical shear factor (default 0) |
 | `shadow` | object | Drop shadow: `enabled` (bool), `offset_x`, `offset_y`, `blur` (floats), `color` ([r,g,b,a] array) |
 | `mask` | string | id of another element to use as a clip mask |
-| `parent` | string | id of parent element (child `x/y` are then parent-relative) |
+| `parent` | string | id of parent element; omit to parent directly to root |
+| `anim_in` / `anim_out` | object | In/out animation def: `type`, `easing`, `duration`, `delay` |
+| `data_anim_in` / `data_anim_out` | object | Data-change animation (same structure as anim_in/out) |
 
 ## Conventions
 
@@ -98,6 +135,7 @@ IElement          (element.h)     — id, parent/child tree, virtual Render/Appl
 - Mask clipping offset is computed via `GetGlobalPosition()` on both elements — never via raw bounds — so clipping is correct when either element has a parent.
 - Image element always clips to its own bounds before painting, so Cover/FitWidth/FitHeight/None scale modes cannot bleed outside the element rect.
 - Drop shadow is drawn before any wipe/corner/mask clip; during wipe animations it tracks the clip box rather than full element bounds.
+- Data-change animations compose on top of graphic in/out animations: opacities multiply, offsets add, scales multiply. A wipe data animation overrides the graphic wipe clip.
 - `SOL_NO_THREAD_LOCAL` is defined to avoid Lua thread-local overhead.
 - `-fPIC` is required because this static lib is linked into a shared library (OBS module).
 
@@ -106,7 +144,7 @@ IElement          (element.h)     — id, parent/child tree, virtual Render/Appl
 The CMakeLists exports `${CMAKE_CURRENT_SOURCE_DIR}/..` as the PUBLIC include directory. When this repo is a submodule at `engine/`, consumers include as:
 
 ```cpp
-#include "engine/scene.h"
+#include "engine/title.h"
 #include "engine/types.hpp"
 // etc.
 ```
