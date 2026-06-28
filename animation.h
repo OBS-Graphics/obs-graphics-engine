@@ -8,8 +8,6 @@
 #include <algorithm>
 #include <concepts>
 
-struct Element;
-
 template <typename T>
 concept FloatingPoint = std::same_as<T, float> || std::same_as<T, double>;
 
@@ -112,5 +110,5 @@ T ApplyEasing(T t, Easing e)
 }
 
 AnimatedTransform EvaluateAnimation(const AnimationDef& def, double timer, bool isOut,
-                                    const Element& el);
+                                    double width, double height);
 } // namespace animation

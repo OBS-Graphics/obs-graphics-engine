@@ -3,70 +3,50 @@
 
 #include "scene.h"
 
-#include <nlohmann/json.hpp>
-#include <fstream>
+#include "element_image.h"
+#include "element_qr.h"
+#include "element_rectangle.h"
+#include "element_text.h"
 
-// ── JSON loading ─────────────────────────────────────────────────────────────
+#include <fstream>
+#include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
 
+// ── Parsers ───────────────────────────────────────────────────────────────────
+
 static Easing ParseEasing(const std::string& s)
 {
-    if (s == "ease_in")
-        return Easing::EaseIn;
-    if (s == "ease_out")
-        return Easing::EaseOut;
-    if (s == "ease_in_out")
-        return Easing::EaseInOut;
-    if (s == "ease_in_cubic")
-        return Easing::EaseInCubic;
-    if (s == "ease_out_cubic")
-        return Easing::EaseOutCubic;
-    if (s == "ease_in_out_cubic")
-        return Easing::EaseInOutCubic;
-    if (s == "ease_in_expo")
-        return Easing::EaseInExpo;
-    if (s == "ease_out_expo")
-        return Easing::EaseOutExpo;
-    if (s == "ease_in_out_expo")
-        return Easing::EaseInOutExpo;
-    if (s == "ease_in_back")
-        return Easing::EaseInBack;
-    if (s == "ease_out_back")
-        return Easing::EaseOutBack;
-    if (s == "ease_in_out_back")
-        return Easing::EaseInOutBack;
-    if (s == "ease_in_elastic")
-        return Easing::EaseInElastic;
-    if (s == "ease_out_elastic")
-        return Easing::EaseOutElastic;
-    if (s == "ease_in_out_elastic")
-        return Easing::EaseInOutElastic;
+    if (s == "ease_in")          return Easing::EaseIn;
+    if (s == "ease_out")         return Easing::EaseOut;
+    if (s == "ease_in_out")      return Easing::EaseInOut;
+    if (s == "ease_in_cubic")    return Easing::EaseInCubic;
+    if (s == "ease_out_cubic")   return Easing::EaseOutCubic;
+    if (s == "ease_in_out_cubic") return Easing::EaseInOutCubic;
+    if (s == "ease_in_expo")     return Easing::EaseInExpo;
+    if (s == "ease_out_expo")    return Easing::EaseOutExpo;
+    if (s == "ease_in_out_expo") return Easing::EaseInOutExpo;
+    if (s == "ease_in_back")     return Easing::EaseInBack;
+    if (s == "ease_out_back")    return Easing::EaseOutBack;
+    if (s == "ease_in_out_back") return Easing::EaseInOutBack;
+    if (s == "ease_in_elastic")  return Easing::EaseInElastic;
+    if (s == "ease_out_elastic") return Easing::EaseOutElastic;
+    if (s == "ease_in_out_elastic") return Easing::EaseInOutElastic;
     return Easing::Linear;
 }
 
 static AnimationType ParseAnimationType(const std::string& s)
 {
-    if (s == "fade")
-        return AnimationType::Fade;
-    if (s == "slide_up")
-        return AnimationType::SlideUp;
-    if (s == "slide_down")
-        return AnimationType::SlideDown;
-    if (s == "slide_left")
-        return AnimationType::SlideLeft;
-    if (s == "slide_right")
-        return AnimationType::SlideRight;
-    if (s == "scale_in")
-        return AnimationType::ScaleIn;
-    if (s == "wipe_up")
-        return AnimationType::WipeUp;
-    if (s == "wipe_down")
-        return AnimationType::WipeDown;
-    if (s == "wipe_left")
-        return AnimationType::WipeLeft;
-    if (s == "wipe_right")
-        return AnimationType::WipeRight;
+    if (s == "fade")        return AnimationType::Fade;
+    if (s == "slide_up")    return AnimationType::SlideUp;
+    if (s == "slide_down")  return AnimationType::SlideDown;
+    if (s == "slide_left")  return AnimationType::SlideLeft;
+    if (s == "slide_right") return AnimationType::SlideRight;
+    if (s == "scale_in")    return AnimationType::ScaleIn;
+    if (s == "wipe_up")     return AnimationType::WipeUp;
+    if (s == "wipe_down")   return AnimationType::WipeDown;
+    if (s == "wipe_left")   return AnimationType::WipeLeft;
+    if (s == "wipe_right")  return AnimationType::WipeRight;
     return AnimationType::None;
 }
 
@@ -82,83 +62,58 @@ static AnimationDef ParseAnimationDef(const json& j)
 
 static FontWeight ParseFontWeight(const std::string& s)
 {
-    if (s == "thin")
-        return FontWeight::Thin;
-    if (s == "ultrathin")
-        return FontWeight::UltraThin;
-    if (s == "ultralight")
-        return FontWeight::UltraLight;
-    if (s == "semilight")
-        return FontWeight::SemiLight;
-    if (s == "light")
-        return FontWeight::Light;
-    if (s == "book")
-        return FontWeight::Book;
-    if (s == "medium")
-        return FontWeight::Medium;
-    if (s == "semibold")
-        return FontWeight::SemiBold;
-    if (s == "bold")
-        return FontWeight::Bold;
-    if (s == "ultrabold")
-        return FontWeight::UltraBold;
-    if (s == "heavy")
-        return FontWeight::Heavy;
-    if (s == "ultraheavy")
-        return FontWeight::UltraHeavy;
+    if (s == "thin")        return FontWeight::Thin;
+    if (s == "ultrathin")   return FontWeight::UltraThin;
+    if (s == "ultralight")  return FontWeight::UltraLight;
+    if (s == "semilight")   return FontWeight::SemiLight;
+    if (s == "light")       return FontWeight::Light;
+    if (s == "book")        return FontWeight::Book;
+    if (s == "medium")      return FontWeight::Medium;
+    if (s == "semibold")    return FontWeight::SemiBold;
+    if (s == "bold")        return FontWeight::Bold;
+    if (s == "ultrabold")   return FontWeight::UltraBold;
+    if (s == "heavy")       return FontWeight::Heavy;
+    if (s == "ultraheavy")  return FontWeight::UltraHeavy;
     return FontWeight::Normal;
 }
 
 static HorizontalAlignment ParseHAlignment(std::string s)
 {
     std::transform(s.begin(), s.end(), s.begin(), ::tolower);
-    if (s == "center")
-        return HorizontalAlignment::Center;
-    if (s == "far" || s == "right" || s == "end")
-        return HorizontalAlignment::Right;
-    if (s == "justify")
-        return HorizontalAlignment::Justify;
+    if (s == "center")                  return HorizontalAlignment::Center;
+    if (s == "far" || s == "right" || s == "end") return HorizontalAlignment::Right;
+    if (s == "justify")                 return HorizontalAlignment::Justify;
     return HorizontalAlignment::Left;
 }
 
 static VerticalAlignment ParseVAlignment(std::string s)
 {
     std::transform(s.begin(), s.end(), s.begin(), ::tolower);
-    if (s == "bottom" || s == "end" || s == "down")
-        return VerticalAlignment::Bottom;
-    if (s == "center" || s == "middle")
-        return VerticalAlignment::Middle;
+    if (s == "bottom" || s == "end" || s == "down") return VerticalAlignment::Bottom;
+    if (s == "center" || s == "middle")             return VerticalAlignment::Middle;
     return VerticalAlignment::Top;
 }
 
 static Ellipsize ParseEllipsize(const std::string& s)
 {
-    if (s == "start")
-        return Ellipsize::Start;
-    if (s == "middle")
-        return Ellipsize::Middle;
-    if (s == "end")
-        return Ellipsize::End;
+    if (s == "start")  return Ellipsize::Start;
+    if (s == "middle") return Ellipsize::Middle;
+    if (s == "end")    return Ellipsize::End;
     return Ellipsize::None;
 }
 
 static WrapMode ParseWrapMode(const std::string& s)
 {
-    if (s == "char")
-        return WrapMode::Char;
-    if (s == "word_char")
-        return WrapMode::WordChar;
+    if (s == "char")      return WrapMode::Char;
+    if (s == "word_char") return WrapMode::WordChar;
     return WrapMode::Word;
 }
 
 static TextTransform ParseTextTransform(const std::string& s)
 {
-    if (s == "capitalize")
-        return TextTransform::Capitalize;
-    if (s == "uppercase")
-        return TextTransform::Uppercase;
-    if (s == "lowercase")
-        return TextTransform::Lowercase;
+    if (s == "capitalize") return TextTransform::Capitalize;
+    if (s == "uppercase")  return TextTransform::Uppercase;
+    if (s == "lowercase")  return TextTransform::Lowercase;
     return TextTransform::None;
 }
 
@@ -181,9 +136,8 @@ static Paint ParsePaint(const json& v)
         return Paint::Solid(r, g, b, a);
     }
 
-    if (v.is_string()) {
+    if (v.is_string())
         return Paint::Image(v.get<std::string>());
-    }
 
     if (v.is_object()) {
         std::string type = v.value("type", "");
@@ -216,17 +170,10 @@ static Paint ParsePaint(const json& v)
     return Paint{};
 }
 
-static Element ParseElement(const json& j)
+static void ParseCommonProperties(VisualElement& el, const json& j)
 {
-    Element el;
-    el.id = j.value("id", "");
-    std::string t = j.value("type", "");
-    el.type = (t == "text")    ? ElementType::Text
-            : (t == "image")   ? ElementType::Image
-            : (t == "qr_code") ? ElementType::QrCode
-            : ElementType::Rectangle;
-
-    el.bounds = {j.value("x", 0.0), j.value("y", 0.0), j.value("w", 0.0), j.value("h", 0.0)};
+    el.SetId(j.value("id", ""));
+    el.SetBounds({j.value("x", 0.0), j.value("y", 0.0), j.value("w", 0.0), j.value("h", 0.0)});
 
     if (j.contains("fill"))
         el.fill = ParsePaint(j["fill"]);
@@ -249,32 +196,16 @@ static Element ParseElement(const json& j)
     el.zOrder = j.value("z_order", 0);
     el.strokeWidth = j.value("stroke_width", 0.0f);
     el.opacity = j.value("opacity", 1.0f);
-    el.rotation = j.value("rotation", 0.0f);
-    el.shearX = j.value("shear_x", 0.0f);
-    el.shearY = j.value("shear_y", 0.0f);
-    el.text = j.value("text", "");
-    el.font.family = j.value("font_family", "Sans");
-    el.font.size = j.value("font_size", 36.0f);
-    el.font.isItalic = j.value("font_italic", false);
-    el.font.isUnderline = j.value("font_underline", false);
-    el.font.isStrikethrough = j.value("font_strikethrough", false);
-    el.font.weight = ParseFontWeight(j.value("font_weight", "normal"));
-    el.imagePath = j.value("image_path", "");
-    el.imageScaleMode = ParseScaleMode(j.value("scale_mode", "stretch"));
-    el.imageTileScale = j.value("image_tile_scale", 1.0);
-    el.textStyle.autoScale = j.value("auto_scale", false);
-    el.textStyle.alignX = ParseHAlignment(j.value("text_align_x", "left"));
-    el.textStyle.alignY = ParseVAlignment(j.value("text_align_y", "top"));
-    el.textStyle.ellipsize = ParseEllipsize(j.value("ellipsize", "none"));
-    el.textStyle.wrapMode = ParseWrapMode(j.value("wrap", "word"));
-    el.textStyle.transform = ParseTextTransform(j.value("text_transform", "none"));
+    el.SetRotation(j.value("rotation", 0.0f));
+    el.SetShearX(j.value("shear_x", 0.0f));
+    el.SetShearY(j.value("shear_y", 0.0f));
 
     if (j.contains("shadow") && j["shadow"].is_object()) {
         const auto& sj = j["shadow"];
         el.shadow.enabled = sj.value("enabled", true);
         el.shadow.offsetX = sj.value("offset_x", 4.0);
         el.shadow.offsetY = sj.value("offset_y", 4.0);
-        el.shadow.blur = sj.value("blur", 8.0);
+        el.shadow.blur    = sj.value("blur", 8.0);
         if (sj.contains("color") && sj["color"].is_array() && sj["color"].size() >= 4) {
             for (int i = 0; i < 4; ++i)
                 el.shadow.color[i] = sj["color"][i].get<float>();
@@ -292,7 +223,50 @@ static Element ParseElement(const json& j)
         for (int i = 0; i < 4; ++i)
             el.childrenPadding[i] = j["children_padding"][i].get<float>();
     }
+}
 
+static std::unique_ptr<VisualElement> ParseElement(const json& j)
+{
+    std::string t = j.value("type", "");
+
+    if (t == "text") {
+        auto el = std::make_unique<TextElement>();
+        el->text = j.value("text", "");
+        el->font.family        = j.value("font_family", "Sans");
+        el->font.size          = j.value("font_size", 36.0f);
+        el->font.isItalic      = j.value("font_italic", false);
+        el->font.isUnderline   = j.value("font_underline", false);
+        el->font.isStrikethrough = j.value("font_strikethrough", false);
+        el->font.weight        = ParseFontWeight(j.value("font_weight", "normal"));
+        el->textStyle.autoScale = j.value("auto_scale", false);
+        el->textStyle.alignX   = ParseHAlignment(j.value("text_align_x", "left"));
+        el->textStyle.alignY   = ParseVAlignment(j.value("text_align_y", "top"));
+        el->textStyle.ellipsize = ParseEllipsize(j.value("ellipsize", "none"));
+        el->textStyle.wrapMode  = ParseWrapMode(j.value("wrap", "word"));
+        el->textStyle.transform = ParseTextTransform(j.value("text_transform", "none"));
+        ParseCommonProperties(*el, j);
+        return el;
+    }
+
+    if (t == "image") {
+        auto el = std::make_unique<ImageElement>();
+        el->imagePath      = j.value("image_path", "");
+        el->imageScaleMode = ParseScaleMode(j.value("scale_mode", "stretch"));
+        el->imageTileScale = j.value("image_tile_scale", 1.0);
+        ParseCommonProperties(*el, j);
+        return el;
+    }
+
+    if (t == "qr_code") {
+        auto el = std::make_unique<QrElement>();
+        el->text = j.value("text", "");
+        ParseCommonProperties(*el, j);
+        return el;
+    }
+
+    // Default: rectangle
+    auto el = std::make_unique<RectangleElement>();
+    ParseCommonProperties(*el, j);
     return el;
 }
 
@@ -320,22 +294,27 @@ static Graphic ParseGraphic(const json& j)
 
     std::unordered_map<std::string, size_t> idMap;
     for (size_t i = 0; i < g.elements.size(); i++)
-        idMap[g.elements[i].id] = i;
+        idMap[g.elements[i]->GetId()] = i;
 
     for (auto& ref : pending) {
-        auto& el = g.elements[ref.idx];
+        auto& el = *g.elements[ref.idx];
 
         if (!ref.maskId.empty()) {
             auto it = idMap.find(ref.maskId);
             if (it != idMap.end())
-                el.mask = &g.elements[it->second];
+                el.mask = g.elements[it->second].get();
         }
 
         if (!ref.parentId.empty()) {
             auto it = idMap.find(ref.parentId);
             if (it != idMap.end()) {
-                el.parent = &g.elements[it->second];
-                el.parent->children.push_back(&el);
+                VisualElement* parent = g.elements[it->second].get();
+                // JSON positions are local (parent-relative). AddChild→SetParent expects world
+                // coords, so temporarily convert to world; SetParent will subtract parent back.
+                Point childLocal = el.GetPosition();
+                Point parentWorld = parent->GetGlobalPosition();
+                el.SetPosition({childLocal.x + parentWorld.x, childLocal.y + parentWorld.y});
+                parent->AddChild(&el);
             }
         }
     }
@@ -343,11 +322,13 @@ static Graphic ParseGraphic(const json& j)
     return g;
 }
 
+// ── Public API ────────────────────────────────────────────────────────────────
+
 Scene Scene::LoadString(const std::string& jsonStr)
 {
     Scene scene;
     auto j = json::parse(jsonStr);
-    scene.width = j.value("width", 1920);
+    scene.width  = j.value("width", 1920);
     scene.height = j.value("height", 1080);
     if (j.contains("graphics") && j["graphics"].is_array()) {
         for (const auto& gj : j["graphics"])
@@ -358,9 +339,8 @@ Scene Scene::LoadString(const std::string& jsonStr)
 
 void Scene::Tick(float timeStep)
 {
-    for (auto& g : graphics) {
+    for (auto& g : graphics)
         g.Tick(timeStep);
-    }
 }
 
 void Scene::Render(cairo_t* ctx) const
@@ -370,10 +350,8 @@ void Scene::Render(cairo_t* ctx) const
     std::stable_sort(gOrder.begin(), gOrder.end(),
                      [&](size_t a, size_t b) { return graphics[a].zOrder < graphics[b].zOrder; });
 
-    for (size_t gi : gOrder) {
-        const auto& g = graphics[gi];
-        g.Render(ctx);
-    }
+    for (size_t gi : gOrder)
+        graphics[gi].Render(ctx);
 }
 
 Graphic& Scene::GetById(const std::string& id)

@@ -24,6 +24,10 @@ struct Point {
     double x, y;
 };
 
+struct Size {
+    double width, height;
+};
+
 struct Rectangle {
     double x, y, width, height;
 };

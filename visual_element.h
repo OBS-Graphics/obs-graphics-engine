@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Diego Lopes <diego95lopes@gmail.com>
+
+#pragma once
+
+#include "animation.h"
+#include "spatial.h"
+#include "types.hpp"
+
+class VisualElement : public Spatial {
+public:
+    int zOrder{0};
+
+    AnimationDef inAnimation{}, outAnimation{};
+    AnimationDef dataInAnimation{}, dataOutAnimation{};
+
+    Paint fill, stroke;
+    float strokeWidth{0.0f};
+    float cornerRadius[4]{0.0f, 0.0f, 0.0f, 0.0f};
+    float opacity{1.0f};
+
+    VisualElement* mask{nullptr};
+
+    bool fitToChildren{false};
+    float childrenPadding[4]{0.0f, 0.0f, 0.0f, 0.0f};
+
+    struct DropShadow {
+        bool enabled{false};
+        double offsetX{4.0};
+        double offsetY{4.0};
+        double blur{8.0};
+        float color[4]{0.0f, 0.0f, 0.0f, 0.8f};
+    } shadow{};
+
+    void Render(cairo_t* ctx, const AnimatedTransform& xf,
+                const AnimatedTransform* maskXf,
+                double timer, bool isOut,
+                double parentOffX = 0.0, double parentOffY = 0.0) const override;
+
+    void ApplyClipping(cairo_t* ctx, const AnimatedTransform& xf,
+                       const AnimatedTransform* maskXf,
+                       double parentOffX, double parentOffY) const override;
+
+    virtual void SetContent(const std::string& value) {}
+
+protected:
+    virtual void RenderContent(cairo_t* ctx) const = 0;
+    void ApplyFillAndStroke(cairo_t* ctx) const;
+};

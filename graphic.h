@@ -4,14 +4,15 @@
 #pragma once
 
 #include "data-source.h"
-#include "element.h"
+#include "visual_element.h"
+#include <memory>
 #include <vector>
 
 enum class GraphicState { Hidden, AnimatingIn, Visible, AnimatingOut };
 
 struct Graphic {
     std::string id;
-    std::vector<Element> elements;
+    std::vector<std::unique_ptr<VisualElement>> elements;
     GraphicState state{GraphicState::Hidden};
     double timer{0.0f};
     int zOrder{0};
@@ -28,7 +29,7 @@ struct Graphic {
 
     void UpdateData();
 
-    Element& GetById(const std::string& id);
+    VisualElement& GetById(const std::string& id);
 
     void Tick(float timeStep);
     void Render(cairo_t* ctx) const;

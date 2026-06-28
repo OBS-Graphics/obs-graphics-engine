@@ -64,6 +64,13 @@ CPMAddPackage(
 
 add_library(engine STATIC
     element.cpp
+    spatial.cpp
+    visual_element.cpp
+    element_rectangle.cpp
+    element_text.cpp
+    element_image.cpp
+    element_qr.cpp
+    render_util.cpp
     animation.cpp
     graphic.cpp
     scene.cpp

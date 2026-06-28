@@ -15,77 +15,61 @@ void Graphic::TriggerIn(size_t recordIndex)
     timer = 0.0f;
 }
 
-// TODO: In the future, animate data transitions.
-void Graphic::UpdateData() {
+void Graphic::UpdateData()
+{
     if (!dataSource) return;
 
     auto data = dataSource->GetData();
-    if (data.empty()) {
-        return;
-    }
+    if (data.empty()) return;
 
     const auto& record = data[dataRecordIndex % data.size()];
     for (auto&& rec : record) {
         try {
-            auto& el = GetById(rec.first);
-            switch (el.type) {
-                case ElementType::Text:
-                case ElementType::QrCode:
-                    el.text = rec.second;
-                    break;
-                case ElementType::Image:
-                    el.imagePath = rec.second;
-                    break;
-                default: break;
-            }
+            GetById(rec.first).SetContent(rec.second);
         } catch (const std::runtime_error&) {
             // No element with this id; ignore
         }
     }
 }
 
-Element& Graphic::GetById(const std::string& id)
+VisualElement& Graphic::GetById(const std::string& id)
 {
     for (auto& el : elements) {
-        if (el.id == id)
-            return el;
+        if (el->GetId() == id)
+            return *el;
     }
     throw std::runtime_error("Element with id '" + id + "' not found");
 }
 
 void Graphic::Tick(float timeStep)
 {
-    // Update data timer
     updateTimer += timeStep;
 
     const double updateInterval = 0.25;
     int prevSlot = static_cast<int>(prevUpdateTimer / updateInterval);
     int currSlot = static_cast<int>(updateTimer / updateInterval);
 
-    if (prevSlot != currSlot) {
+    if (prevSlot != currSlot)
         UpdateData();
-    }
 
     prevUpdateTimer = updateTimer;
 
-    if (state == GraphicState::Hidden || state == GraphicState::Visible) {
+    if (state == GraphicState::Hidden || state == GraphicState::Visible)
         return;
-    }
 
     timer += timeStep;
 
     bool allDone = true;
     for (const auto& el : elements) {
-        const auto& def = state == GraphicState::AnimatingIn ? el.inAnimation : el.outAnimation;
+        const auto& def = state == GraphicState::AnimatingIn ? el->inAnimation : el->outAnimation;
         if (timer < def.delay + def.duration) {
             allDone = false;
             break;
         }
     }
 
-    if (allDone) {
+    if (allDone)
         state = state == GraphicState::AnimatingIn ? GraphicState::Visible : GraphicState::Hidden;
-    }
 }
 
 void Graphic::Render(cairo_t* ctx) const
@@ -96,38 +80,38 @@ void Graphic::Render(cairo_t* ctx) const
     std::vector<size_t> eOrder(elements.size());
     std::iota(eOrder.begin(), eOrder.end(), 0);
     std::stable_sort(eOrder.begin(), eOrder.end(),
-                     [&](size_t a, size_t b) { return elements[a].zOrder < elements[b].zOrder; });
+                     [&](size_t a, size_t b) { return elements[a]->zOrder < elements[b]->zOrder; });
 
     bool isOut = state == GraphicState::AnimatingOut;
 
-    // Pre-compute all transforms so mask elements' animated offsets can be applied
     std::vector<AnimatedTransform> xforms(elements.size());
     for (size_t i = 0; i < elements.size(); ++i) {
-        const auto& def = isOut ? elements[i].outAnimation : elements[i].inAnimation;
-        xforms[i] = animation::EvaluateAnimation(def, timer, isOut, elements[i]);
+        const auto& def = isOut ? elements[i]->outAnimation : elements[i]->inAnimation;
+        const auto& sz = elements[i]->GetSize();
+        xforms[i] = animation::EvaluateAnimation(def, timer, isOut, sz.width, sz.height);
     }
 
-    auto findIdx = [&](const Element* p) -> size_t {
+    auto findIdx = [&](const VisualElement* p) -> size_t {
         for (size_t i = 0; i < elements.size(); ++i)
-            if (&elements[i] == p) return i;
+            if (elements[i].get() == p) return i;
         return SIZE_MAX;
     };
 
     for (size_t ei : eOrder) {
         const auto& el = elements[ei];
-        if (el.parent != nullptr) continue;
+        if (el->GetParent() != nullptr) continue;
 
         const AnimatedTransform& xf = xforms[ei];
         const AnimatedTransform* maskXf = nullptr;
-        if (el.mask != nullptr) {
-            size_t mi = findIdx(el.mask);
+        if (el->mask != nullptr) {
+            size_t mi = findIdx(el->mask);
             if (mi != SIZE_MAX) maskXf = &xforms[mi];
         }
 
-        auto pos = el.GetGlobalPosition();
+        auto pos = el->GetGlobalPosition();
         cairo_save(ctx);
         cairo_translate(ctx, pos.x, pos.y);
-        el.Render(ctx, xf, maskXf, timer, isOut, 0.0, 0.0);
+        el->Render(ctx, xf, maskXf, timer, isOut, 0.0, 0.0);
         cairo_restore(ctx);
     }
 }

@@ -3,129 +3,43 @@
 
 #pragma once
 
-#include <memory>
-#include <pango/pangocairo.h>
 #include <string>
 #include <vector>
 
 #include "animation.h"
 #include "types.hpp"
-#include "qr.hpp"
 
-enum class ElementType { Rectangle, Text, Image, QrCode };
+class IElement {
+public:
+    virtual ~IElement() = default;
 
-enum class FontWeight {
-    Normal = PANGO_WEIGHT_NORMAL,
-    Medium = PANGO_WEIGHT_MEDIUM,
-    Bold = PANGO_WEIGHT_BOLD,
-    SemiBold = PANGO_WEIGHT_SEMIBOLD,
-    UltraBold = PANGO_WEIGHT_ULTRABOLD,
-    Light = PANGO_WEIGHT_LIGHT,
-    SemiLight = PANGO_WEIGHT_SEMILIGHT,
-    UltraLight = PANGO_WEIGHT_ULTRALIGHT,
-    Thin = PANGO_WEIGHT_THIN,
-    UltraThin = PANGO_WEIGHT_THIN,
-    Heavy = PANGO_WEIGHT_HEAVY,
-    UltraHeavy = PANGO_WEIGHT_ULTRAHEAVY,
-    Book = PANGO_WEIGHT_BOOK
-};
+    const std::string& GetId() const { return m_id; }
+    void SetId(const std::string& id) { m_id = id; }
 
-enum class HorizontalAlignment { Left = 0, Center, Justify, Right };
+    IElement* GetParent() const { return m_parent; }
+    virtual void SetParent(IElement* parent);
 
-enum class VerticalAlignment { Top = 0, Middle, Bottom };
+    const std::vector<IElement*>& GetChildren() const { return m_children; }
 
-enum class Ellipsize {
-    None = PANGO_ELLIPSIZE_NONE,
-    Start = PANGO_ELLIPSIZE_START,
-    Middle = PANGO_ELLIPSIZE_MIDDLE,
-    End = PANGO_ELLIPSIZE_END
-};
+    void AddChild(IElement* element);
+    void RemoveChild(IElement* element);
 
-enum class WrapMode {
-    Word = PANGO_WRAP_WORD,
-    Char = PANGO_WRAP_CHAR,
-    WordChar = PANGO_WRAP_WORD_CHAR
-};
+    virtual Point GetGlobalPosition() const { return {0.0, 0.0}; }
 
-enum class TextTransform { None = 0, Capitalize, Uppercase, Lowercase };
+    virtual void Render(cairo_t* ctx, const AnimatedTransform& xf,
+                        const AnimatedTransform* maskXf,
+                        double timer, bool isOut,
+                        double parentOffX = 0.0, double parentOffY = 0.0) const {}
 
-struct Element {
-    std::string id;
-    ElementType type;
+    virtual void ApplyClipping(cairo_t* ctx, const AnimatedTransform& xf,
+                               const AnimatedTransform* maskXf,
+                               double parentOffX, double parentOffY) const {}
 
-    int zOrder{0};
+protected:
+    void AddChildDirect(IElement* child);
+    void RemoveChildDirect(IElement* child);
 
-    AnimationDef inAnimation{}, outAnimation{};
-
-    Rectangle bounds{0.0, 0.0, 100.0, 100.0};
-    float rotation{0.0f};
-    float shearX{0.0f};
-    float shearY{0.0f};
-
-    Paint fill, stroke;
-    float strokeWidth{0.0f};
-    float cornerRadius[4]{0.0f, 0.0f, 0.0f, 0.0f};
-
-    float opacity{1.0f};
-
-    Element* mask{nullptr};
-    Element* parent{nullptr};
-    std::vector<Element*> children;
-
-    bool fitToChildren{false};
-    float childrenPadding[4]{0.0f, 0.0f, 0.0f, 0.0f}; // top, right, bottom, left
-
-    struct {
-        std::string family;
-        float size{36.0f};
-        FontWeight weight{FontWeight::Normal};
-        bool isItalic{false};
-        bool isUnderline{false};
-        bool isStrikethrough{false};
-    } font{};
-
-    std::string text;
-
-    struct {
-        bool autoScale{false};
-        HorizontalAlignment alignX{HorizontalAlignment::Left};
-        VerticalAlignment alignY{VerticalAlignment::Top};
-        Ellipsize ellipsize{Ellipsize::None};
-        WrapMode wrapMode{WrapMode::Word};
-        TextTransform transform{TextTransform::None};
-    } textStyle{};
-
-    std::string imagePath{};
-    ScaleMode imageScaleMode{ScaleMode::Stretch};
-    double imageTileScale{1.0};
-
-    struct DropShadow {
-        bool enabled{false};
-        double offsetX{4.0};
-        double offsetY{4.0};
-        double blur{8.0};
-        // RGBA, each in [0, 1]
-        float color[4]{0.0f, 0.0f, 0.0f, 0.8f};
-    } shadow{};
-
-    void Render(cairo_t* ctx, const AnimatedTransform& xf,
-                const AnimatedTransform* maskXf,
-                double timer, bool isOut,
-                double parentOffX = 0.0, double parentOffY = 0.0) const;
-    void ApplyClipping(cairo_t* ctx, const AnimatedTransform& xf,
-                       const AnimatedTransform* maskXf,
-                       double parentOffX, double parentOffY) const;
-    Point GetGlobalPosition() const;
-
-private:
-    // Renders the drop shadow as a 3x box-blur (~Gaussian) of the element shape
-    // on an A8 surface, composited as a coloured shadow via cairo_mask_surface().
-    void RenderDropShadow(cairo_t* ctx, double sx, double sy, double sw, double sh,
-                          double blur, double r, double g, double b, double a,
-                          float cornerR) const;
-
-    mutable std::string m_oldText{"\xff"};
-    mutable qr::DynQr m_qr{};
-    mutable std::shared_ptr<cairo_surface_t> m_image{};
-    mutable std::string m_imageCachePath{};
+    std::string m_id;
+    IElement* m_parent{nullptr};
+    std::vector<IElement*> m_children;
 };

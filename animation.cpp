@@ -3,11 +3,10 @@
 
 #include "animation.h"
 
-#include "element.h"
-
 namespace animation {
+
 AnimatedTransform EvaluateAnimation(const AnimationDef& def, double timer, bool isOut,
-                                    const Element& el)
+                                    double width, double height)
 {
     AnimatedTransform out{};
 
@@ -24,19 +23,19 @@ AnimatedTransform EvaluateAnimation(const AnimationDef& def, double timer, bool 
         break;
     case AnimationType::Fade: fnFade(); break;
     case AnimationType::SlideUp:
-        out.offsetY = (isOut ? -p : rp) * el.bounds.height;
+        out.offsetY = (isOut ? -p : rp) * height;
         fnFade();
         break;
     case AnimationType::SlideDown:
-        out.offsetY = (isOut ? p : -rp) * el.bounds.height;
+        out.offsetY = (isOut ? p : -rp) * height;
         fnFade();
         break;
     case AnimationType::SlideLeft:
-        out.offsetX = (isOut ? p : -rp) * el.bounds.width;
+        out.offsetX = (isOut ? p : -rp) * width;
         fnFade();
         break;
     case AnimationType::SlideRight:
-        out.offsetX = (isOut ? -p : rp) * el.bounds.width;
+        out.offsetX = (isOut ? -p : rp) * width;
         fnFade();
         break;
     case AnimationType::WipeUp:
@@ -63,4 +62,5 @@ AnimatedTransform EvaluateAnimation(const AnimationDef& def, double timer, bool 
 
     return out;
 }
+
 } // namespace animation
