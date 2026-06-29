@@ -31,11 +31,11 @@ AnimatedTransform EvaluateAnimation(const AnimationDef& def, double timer, bool 
         fnFade();
         break;
     case AnimationType::SlideLeft:
-        out.offsetX = (isOut ? p : -rp) * width;
+        out.offsetX = (isOut ? -p : rp) * width;
         fnFade();
         break;
     case AnimationType::SlideRight:
-        out.offsetX = (isOut ? -p : rp) * width;
+        out.offsetX = (isOut ? p : -rp) * width;
         fnFade();
         break;
     case AnimationType::WipeUp:

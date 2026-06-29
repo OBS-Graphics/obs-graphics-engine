@@ -51,7 +51,7 @@ protected:
     void ApplyFillAndStroke(cairo_t* ctx) const;
 
     // Returns an A8 surface representing this element's shadow shape, or nullptr
-    // to fall back to a rounded-rect shadow. Called only when not mid-wipe.
+    // to fall back to a rounded-rect shadow.
     virtual cairo_surface_t* CreateShadowSurface(int w, int h) const { return nullptr; }
 
 private:

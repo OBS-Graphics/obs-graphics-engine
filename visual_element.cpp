@@ -5,6 +5,7 @@
 #include "render_util.h"
 
 #include <algorithm>
+#include <cstring>
 
 // ── Data-change animation ─────────────────────────────────────────────────────
 
@@ -51,6 +52,25 @@ void VisualElement::TickData(float dt)
     }
 }
 
+// ── Internal helpers ──────────────────────────────────────────────────────────
+
+// Clips ctx to the wipe rect defined in the element's sheared coordinate space.
+// cairo_set_matrix restores the transform while leaving the clip baked in device coords.
+static void ApplyShearAwareWipeClip(cairo_t* ctx, const Transform& tf,
+                                     double cx, double cy,
+                                     double clipX, double clipY, double clipW, double clipH,
+                                     double boundsW, double boundsH)
+{
+    cairo_matrix_t mat;
+    cairo_get_matrix(ctx, &mat);
+    tf.Apply(ctx, cx, cy);
+    cairo_rectangle(ctx, 0.0, 0.0, boundsW, boundsH);
+    cairo_clip(ctx);
+    cairo_rectangle(ctx, clipX, clipY, clipW, clipH);
+    cairo_clip(ctx);
+    cairo_set_matrix(ctx, &mat);
+}
+
 // ── Private render helpers ────────────────────────────────────────────────────
 
 AnimatedTransform VisualElement::ComposeDataAnimation(const AnimatedTransform& xf) const
@@ -91,18 +111,40 @@ void VisualElement::RenderShadow(cairo_t* ctx, const AnimatedTransform& xf,
 
     const Transform tf = GetTransform();
 
+    // Wipe region in element-local coords. Default (no wipe) = full bounds.
+    const double wipeX = xf.clipX * m_bounds.width;
+    const double wipeY = xf.clipY * m_bounds.height;
+    const double wipeW = xf.clipW * m_bounds.width;
+    const double wipeH = xf.clipH * m_bounds.height;
+
+    const bool isWiping = xf.clipX > 0.0 || xf.clipY > 0.0 ||
+                          xf.clipW < 1.0  || xf.clipH < 1.0;
+
     cairo_save(ctx);
-    // Wipe clip: shadow only appears in the currently-revealed area.
-    if (xf.clipX > 0.0 || xf.clipY > 0.0 || xf.clipW < 1.0 || xf.clipH < 1.0) {
-        cairo_rectangle(ctx,
-                        xf.clipX * m_bounds.width, xf.clipY * m_bounds.height,
-                        xf.clipW * m_bounds.width, xf.clipH * m_bounds.height);
-        cairo_clip(ctx);
-    }
     ApplyMaskClip(ctx, xf, maskXf, parentOffX, parentOffY);
 
     cairo_surface_t* customSurf = CreateShadowSurface(sw, sh);
     if (customSurf) {
+        // Zero out pixels outside the wipe region so only the revealed portion
+        // of the glyph outlines contributes to the blur.
+        if (isWiping) {
+            cairo_surface_flush(customSurf);
+            uint8_t*   pix    = cairo_image_surface_get_data(customSurf);
+            const int  stride = cairo_image_surface_get_stride(customSurf);
+            const int  surfW  = cairo_image_surface_get_width(customSurf);
+            const int  surfH  = cairo_image_surface_get_height(customSurf);
+            const int  x0 = (int)std::floor(wipeX);
+            const int  y0 = (int)std::floor(wipeY);
+            const int  x1 = std::min((int)std::ceil(wipeX + wipeW), surfW);
+            const int  y1 = std::min((int)std::ceil(wipeY + wipeH), surfH);
+            for (int y = 0; y < surfH; ++y) {
+                uint8_t* row = pix + (size_t)y * stride;
+                if (y < y0 || y >= y1) { std::memset(row, 0, surfW); continue; }
+                if (x0 > 0)     std::memset(row,       0, x0);
+                if (x1 < surfW) std::memset(row + x1,  0, surfW - x1);
+            }
+            cairo_surface_mark_dirty(customSurf);
+        }
         render::RenderDropShadowFromSurface(ctx, customSurf,
             shadow.offsetX, shadow.offsetY, shadow.blur,
             shadow.color[0], shadow.color[1], shadow.color[2], alpha, tf);
@@ -110,7 +152,8 @@ void VisualElement::RenderShadow(cairo_t* ctx, const AnimatedTransform& xf,
     } else {
         float cr = *std::min_element(cornerRadius, cornerRadius + 4);
         render::RenderDropShadow(ctx,
-            shadow.offsetX, shadow.offsetY, sw, sh, shadow.blur,
+            shadow.offsetX + wipeX, shadow.offsetY + wipeY,
+            wipeW, wipeH, shadow.blur,
             shadow.color[0], shadow.color[1], shadow.color[2], alpha, cr, tf);
     }
     cairo_restore(ctx);
@@ -174,11 +217,12 @@ void VisualElement::Render(cairo_t* ctx, const AnimatedTransform& xf,
     const bool isWiping = effectiveXf.clipX > 0.0 || effectiveXf.clipY > 0.0 ||
                           effectiveXf.clipW < 1.0  || effectiveXf.clipH < 1.0;
     if (isWiping) {
-        cairo_rectangle(ctx, 0, 0, m_bounds.width, m_bounds.height);
-        cairo_clip(ctx);
-        cairo_rectangle(ctx, effectiveXf.clipX * m_bounds.width, effectiveXf.clipY * m_bounds.height,
-                        effectiveXf.clipW * m_bounds.width, effectiveXf.clipH * m_bounds.height);
-        cairo_clip(ctx);
+        const double cx = m_bounds.width / 2.0;
+        const double cy = m_bounds.height / 2.0;
+        ApplyShearAwareWipeClip(ctx, GetTransform(), cx, cy,
+            effectiveXf.clipX * m_bounds.width, effectiveXf.clipY * m_bounds.height,
+            effectiveXf.clipW * m_bounds.width, effectiveXf.clipH * m_bounds.height,
+            m_bounds.width, m_bounds.height);
     }
 
     const double cx = m_bounds.width / 2.0;
