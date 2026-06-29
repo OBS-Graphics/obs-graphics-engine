@@ -73,9 +73,14 @@ void Title::UpdateData()
     if (data.empty()) return;
 
     const auto& record = data[dataRecordIndex % data.size()];
+    bool instant = (state == TitleState::Hidden);
     for (auto&& [key, value] : record) {
         try {
-            GetById(key).SetContent(value);
+            auto& el = GetById(key);
+            if (instant)
+                el.SetContentInstant(value);
+            else
+                el.SetContent(value);
         } catch (const std::runtime_error&) {
             // no element with this id — ignore
         }

@@ -29,6 +29,17 @@ void VisualElement::SetContent(const std::string& value)
     }
 }
 
+void VisualElement::SetContentInstant(const std::string& value)
+{
+    if (m_contentEverSet && value == m_currentContent) return;
+    m_currentContent = value;
+    m_pendingContent.clear();
+    m_dataAnimState  = DataAnimState::Idle;
+    m_dataAnimTimer  = 0.0;
+    ApplyContent(value);
+    m_contentEverSet = true;
+}
+
 void VisualElement::SetDataPreviewTime(bool isOut, double t)
 {
     m_dataAnimState = isOut ? DataAnimState::AnimatingOut : DataAnimState::AnimatingIn;

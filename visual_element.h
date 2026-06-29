@@ -39,6 +39,10 @@ public:
     // Triggers data-change animation; subclasses override ApplyContent instead.
     virtual void SetContent(const std::string& value) final;
 
+    // Applies content immediately, resetting any in-flight data animation.
+    // Use when the title is Hidden so no stale animation state bleeds into TriggerIn.
+    void SetContentInstant(const std::string& value);
+
     // Called by Title::Tick() while Visible to advance data-change animation state.
     void TickData(float dt);
 
