@@ -62,6 +62,8 @@ public:
         Ellipsize ellipsize{Ellipsize::None};
         WrapMode wrapMode{WrapMode::Word};
         TextTransform transform{TextTransform::None};
+        float lineSpacing{0.0f};   // extra pixels between lines
+        float letterSpacing{0.0f}; // pixels between characters
     } textStyle{};
 
     void ApplyContent(const std::string& value) override { text = value; }

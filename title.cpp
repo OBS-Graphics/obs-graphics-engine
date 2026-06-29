@@ -378,7 +378,9 @@ static std::unique_ptr<VisualElement> ParseElement(const json& j)
         el->textStyle.alignY      = ParseVAlignment(j.value("text_align_y", "top"));
         el->textStyle.ellipsize   = ParseEllipsize(j.value("ellipsize", "none"));
         el->textStyle.wrapMode    = ParseWrapMode(j.value("wrap", "word"));
-        el->textStyle.transform   = ParseTextTransform(j.value("text_transform", "none"));
+        el->textStyle.transform     = ParseTextTransform(j.value("text_transform", "none"));
+        el->textStyle.lineSpacing   = j.value("line_spacing", 0.0f);
+        el->textStyle.letterSpacing = j.value("letter_spacing", 0.0f);
         ParseCommonProperties(*el, j);
         return el;
     }
@@ -652,6 +654,8 @@ static json SerializeElement(const IElement* iel, const IElement* root, const As
             default: break;
             }
         }
+        if (te->textStyle.lineSpacing   != 0.0f) j["line_spacing"]   = te->textStyle.lineSpacing;
+        if (te->textStyle.letterSpacing != 0.0f) j["letter_spacing"] = te->textStyle.letterSpacing;
     } else if (const auto* ie = dynamic_cast<const ImageElement*>(el)) {
         j["type"] = "image";
         if (!ie->imagePath.empty()) j["image_path"] = registerAsset(ie->imagePath);

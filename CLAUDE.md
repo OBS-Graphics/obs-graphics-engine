@@ -125,6 +125,8 @@ The root element (`"__root"`) is **not** serialized. Elements without a `parent`
 | `ellipsize` | string | `"none"`, `"start"`, `"middle"`, `"end"` |
 | `wrap` | string | `"word"`, `"char"`, `"word_char"` |
 | `text_transform` | string | `"none"`, `"capitalize"`, `"uppercase"`, `"lowercase"` |
+| `line_spacing` | float | Extra pixels between lines (default 0); maps to `pango_layout_set_spacing` |
+| `letter_spacing` | float | Pixels between characters (default 0); maps to `pango_attr_letter_spacing_new` |
 | `shear_x` | float | Horizontal shear factor (default 0) |
 | `shear_y` | float | Vertical shear factor (default 0) |
 | `shadow` | object | Drop shadow: `enabled` (bool), `offset_x`, `offset_y`, `blur` (floats), `color` ([r,g,b,a] array) |

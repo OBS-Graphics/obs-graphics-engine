@@ -32,6 +32,9 @@ PangoLayout* TextElement::BuildLayout(cairo_t* ctx, double& ox, double& oy) cons
         pango_attr_list_insert(attrs, pango_attr_underline_new(PANGO_UNDERLINE_SINGLE));
     if (font.isStrikethrough)
         pango_attr_list_insert(attrs, pango_attr_strikethrough_new(TRUE));
+    if (textStyle.letterSpacing != 0.0f)
+        pango_attr_list_insert(attrs,
+            pango_attr_letter_spacing_new(static_cast<int>(textStyle.letterSpacing * PANGO_SCALE)));
 
     PangoLayout* layout = pango_cairo_create_layout(ctx);
     pango_layout_set_text(layout, textXf.c_str(), -1);
@@ -46,6 +49,9 @@ PangoLayout* TextElement::BuildLayout(cairo_t* ctx, double& ox, double& oy) cons
     if (font.isItalic)
         pango_font_description_set_style(fd, PANGO_STYLE_ITALIC);
     pango_layout_set_font_description(layout, fd);
+
+    if (textStyle.lineSpacing != 0.0f)
+        pango_layout_set_spacing(layout, static_cast<int>(textStyle.lineSpacing * PANGO_SCALE));
 
     static constexpr PangoAlignment kAlignMap[] = {PANGO_ALIGN_LEFT, PANGO_ALIGN_CENTER,
                                                    PANGO_ALIGN_LEFT, PANGO_ALIGN_RIGHT};
