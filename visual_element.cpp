@@ -12,6 +12,7 @@
 void VisualElement::SetContent(const std::string& value)
 {
     if (m_contentEverSet && value == m_currentContent) return;
+    if (m_dataAnimState == DataAnimState::AnimatingOut && value == m_pendingContent) return;
 
     if (dataOutAnimation.type != AnimationType::None && m_contentEverSet) {
         m_pendingContent   = value;
