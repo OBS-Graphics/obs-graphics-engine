@@ -37,9 +37,7 @@ public:
                 double timer, bool isOut,
                 double parentOffX = 0.0, double parentOffY = 0.0) const override;
 
-    void ApplyClipping(cairo_t* ctx, const AnimatedTransform& xf,
-                       const AnimatedTransform* maskXf,
-                       double parentOffX, double parentOffY) const override;
+    void ApplyClipping(cairo_t* ctx, const AnimatedTransform& xf) const override;
 
     // Triggers data-change animation; subclasses override ApplyContent instead.
     virtual void SetContent(const std::string& value) final;
@@ -65,8 +63,15 @@ private:
     mutable bool m_contentEverSet{false};
 
     AnimatedTransform ComposeDataAnimation(const AnimatedTransform& xf) const;
-    void RenderShadow(cairo_t* ctx, const AnimatedTransform& effectiveXf) const;
+    void RenderShadow(cairo_t* ctx, const AnimatedTransform& xf,
+                      const AnimatedTransform* maskXf,
+                      double parentOffX, double parentOffY) const;
     void RenderChildren(cairo_t* ctx, const AnimatedTransform& effectiveXf,
                         double timer, bool isOut,
                         double accParentOffX, double accParentOffY) const;
+    // Clips to the mask element bounds in pre-shear coordinate space.
+    // Must be called before any shear transform is applied to ctx.
+    void ApplyMaskClip(cairo_t* ctx, const AnimatedTransform& xf,
+                       const AnimatedTransform* maskXf,
+                       double parentOffX, double parentOffY) const;
 };

@@ -78,44 +78,40 @@ AnimatedTransform VisualElement::ComposeDataAnimation(const AnimatedTransform& x
     return result;
 }
 
-void VisualElement::RenderShadow(cairo_t* ctx, const AnimatedTransform& xf) const
+void VisualElement::RenderShadow(cairo_t* ctx, const AnimatedTransform& xf,
+                                  const AnimatedTransform* maskXf,
+                                  double parentOffX, double parentOffY) const
 {
     if (!shadow.enabled) return;
 
-    const bool isWiping = xf.clipX > 0.0 || xf.clipY > 0.0 ||
-                          xf.clipW < 1.0  || xf.clipH < 1.0;
-
-    double sx, sy, sw, sh;
-    if (isWiping) {
-        sx = xf.clipX * m_bounds.width  + shadow.offsetX;
-        sy = xf.clipY * m_bounds.height + shadow.offsetY;
-        sw = xf.clipW * m_bounds.width;
-        sh = xf.clipH * m_bounds.height;
-    } else {
-        sx = shadow.offsetX;
-        sy = shadow.offsetY;
-        sw = m_bounds.width;
-        sh = m_bounds.height;
-    }
-
     const double alpha = shadow.color[3] * (double)(opacity * xf.opacity);
+    const int sw = (int)std::ceil(m_bounds.width);
+    const int sh = (int)std::ceil(m_bounds.height);
+    if (sw <= 0 || sh <= 0) return;
+
+    const Transform tf = GetTransform();
 
     cairo_save(ctx);
-    if (!isWiping) {
-        cairo_surface_t* shapeSurf = CreateShadowSurface((int)std::ceil(sw), (int)std::ceil(sh));
-        if (shapeSurf) {
-            render::RenderDropShadowFromSurface(ctx, shapeSurf, sx, sy, shadow.blur,
-                shadow.color[0], shadow.color[1], shadow.color[2], alpha);
-            cairo_surface_destroy(shapeSurf);
-        } else {
-            float cr = *std::min_element(cornerRadius, cornerRadius + 4);
-            render::RenderDropShadow(ctx, sx, sy, sw, sh, shadow.blur,
-                shadow.color[0], shadow.color[1], shadow.color[2], alpha, cr);
-        }
+    // Wipe clip: shadow only appears in the currently-revealed area.
+    if (xf.clipX > 0.0 || xf.clipY > 0.0 || xf.clipW < 1.0 || xf.clipH < 1.0) {
+        cairo_rectangle(ctx,
+                        xf.clipX * m_bounds.width, xf.clipY * m_bounds.height,
+                        xf.clipW * m_bounds.width, xf.clipH * m_bounds.height);
+        cairo_clip(ctx);
+    }
+    ApplyMaskClip(ctx, xf, maskXf, parentOffX, parentOffY);
+
+    cairo_surface_t* customSurf = CreateShadowSurface(sw, sh);
+    if (customSurf) {
+        render::RenderDropShadowFromSurface(ctx, customSurf,
+            shadow.offsetX, shadow.offsetY, shadow.blur,
+            shadow.color[0], shadow.color[1], shadow.color[2], alpha, tf);
+        cairo_surface_destroy(customSurf);
     } else {
         float cr = *std::min_element(cornerRadius, cornerRadius + 4);
-        render::RenderDropShadow(ctx, sx, sy, sw, sh, shadow.blur,
-            shadow.color[0], shadow.color[1], shadow.color[2], alpha, cr);
+        render::RenderDropShadow(ctx,
+            shadow.offsetX, shadow.offsetY, sw, sh, shadow.blur,
+            shadow.color[0], shadow.color[1], shadow.color[2], alpha, cr, tf);
     }
     cairo_restore(ctx);
 }
@@ -173,7 +169,7 @@ void VisualElement::Render(cairo_t* ctx, const AnimatedTransform& xf,
 
     cairo_translate(ctx, effectiveXf.offsetX, effectiveXf.offsetY);
 
-    RenderShadow(ctx, effectiveXf);
+    RenderShadow(ctx, effectiveXf, maskXf, parentOffX, parentOffY);
 
     const bool isWiping = effectiveXf.clipX > 0.0 || effectiveXf.clipY > 0.0 ||
                           effectiveXf.clipW < 1.0  || effectiveXf.clipH < 1.0;
@@ -193,22 +189,14 @@ void VisualElement::Render(cairo_t* ctx, const AnimatedTransform& xf,
         cairo_push_group(ctx);
 
     cairo_save(ctx);
-    if (m_shearX != 0.0f || m_shearY != 0.0f) {
-        cairo_translate(ctx, cx, cy);
-        cairo_matrix_t shearMat;
-        cairo_matrix_init(&shearMat, 1.0, (double)m_shearY, (double)m_shearX, 1.0, 0.0, 0.0);
-        cairo_transform(ctx, &shearMat);
-        cairo_translate(ctx, -cx, -cy);
-    }
-    ApplyClipping(ctx, effectiveXf, maskXf, parentOffX, parentOffY);
+    // Mask clip precedes the element transform: the mask lives in world space and
+    // must not be distorted by this element's shear or rotation.
+    ApplyMaskClip(ctx, effectiveXf, maskXf, parentOffX, parentOffY);
+    GetTransform().Apply(ctx, cx, cy);   // shear, then rotation
+    ApplyClipping(ctx, effectiveXf);     // corner-radius + wipe (in fully-transformed space)
     if (effectiveXf.scale != 1.0 && effectiveXf.scale > 1e-6) {
         cairo_translate(ctx, cx, cy);
         cairo_scale(ctx, effectiveXf.scale, effectiveXf.scale);
-        cairo_translate(ctx, -cx, -cy);
-    }
-    if (m_rotation != 0.0f) {
-        cairo_translate(ctx, cx, cy);
-        cairo_rotate(ctx, m_rotation * Pi / 180.0);
         cairo_translate(ctx, -cx, -cy);
     }
     RenderContent(ctx);
@@ -225,9 +213,25 @@ void VisualElement::Render(cairo_t* ctx, const AnimatedTransform& xf,
 
 // ── Clipping ──────────────────────────────────────────────────────────────────
 
-void VisualElement::ApplyClipping(cairo_t* ctx, const AnimatedTransform& xf,
+void VisualElement::ApplyMaskClip(cairo_t* ctx, const AnimatedTransform& xf,
                                    const AnimatedTransform* maskXf,
                                    double parentOffX, double parentOffY) const
+{
+    if (mask == nullptr) return;
+    Point maskGlobal = mask->GetGlobalPosition();
+    Point selfGlobal = GetGlobalPosition();
+    float mx = (float)(maskGlobal.x - selfGlobal.x) - (float)xf.offsetX - (float)parentOffX;
+    float my = (float)(maskGlobal.y - selfGlobal.y) - (float)xf.offsetY - (float)parentOffY;
+    if (maskXf) {
+        mx += (float)maskXf->offsetX;
+        my += (float)maskXf->offsetY;
+    }
+    const auto& mb = mask->GetBounds();
+    render::RoundRect(ctx, mx, my, mb.width, mb.height, mask->cornerRadius);
+    cairo_clip(ctx);
+}
+
+void VisualElement::ApplyClipping(cairo_t* ctx, const AnimatedTransform& xf) const
 {
     const bool isWiping = xf.clipX > 0.0 || xf.clipY > 0.0 || xf.clipW < 1.0 || xf.clipH < 1.0;
     const bool hasRadius = cornerRadius[0] > 0 || cornerRadius[1] > 0 ||
@@ -235,20 +239,6 @@ void VisualElement::ApplyClipping(cairo_t* ctx, const AnimatedTransform& xf,
 
     if (isWiping || hasRadius) {
         render::RoundRect(ctx, 0, 0, m_bounds.width, m_bounds.height, cornerRadius);
-        cairo_clip(ctx);
-    }
-
-    if (mask != nullptr) {
-        Point maskGlobal = mask->GetGlobalPosition();
-        Point selfGlobal = GetGlobalPosition();
-        float mx = (float)(maskGlobal.x - selfGlobal.x) - (float)xf.offsetX - (float)parentOffX;
-        float my = (float)(maskGlobal.y - selfGlobal.y) - (float)xf.offsetY - (float)parentOffY;
-        if (maskXf) {
-            mx += (float)maskXf->offsetX;
-            my += (float)maskXf->offsetY;
-        }
-        const auto& mb = mask->GetBounds();
-        render::RoundRect(ctx, mx, my, mb.width, mb.height, mask->cornerRadius);
         cairo_clip(ctx);
     }
 

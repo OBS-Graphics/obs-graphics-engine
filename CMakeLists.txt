@@ -121,3 +121,22 @@ if(NOT WIN32)
 endif()
 
 target_compile_definitions(engine PRIVATE SOL_NO_THREAD_LOCAL)
+
+# ── Test applications (SDL3) ──────────────────────────────────────────────────
+
+option(BUILD_TESTS "Build SDL3 visual test applications" OFF)
+
+if(BUILD_TESTS)
+    pkg_check_modules(SDL3 REQUIRED IMPORTED_TARGET sdl3)
+
+    function(add_engine_test name)
+        add_executable(${name} tests/${name}.cpp)
+        target_link_libraries(${name} PRIVATE engine PkgConfig::SDL3)
+        # expose project root so tests can #include "title.h" etc. directly
+        target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    endfunction()
+
+    add_engine_test(test_shadow_shear)
+    add_engine_test(test_mask)
+    add_engine_test(test_animation)
+endif()

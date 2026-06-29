@@ -27,6 +27,8 @@ public:
     float GetShearY() const { return m_shearY; }
     void SetShearY(float shearY) { m_shearY = shearY; }
 
+    Transform GetTransform() const { return {m_rotation, m_shearX, m_shearY}; }
+
     // Adjusts local position to maintain world position when reparented.
     void SetParent(IElement* parent) override;
 

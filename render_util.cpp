@@ -117,8 +117,9 @@ std::shared_ptr<cairo_surface_t> LoadImageSurface(const std::string& path)
     return std::shared_ptr<cairo_surface_t>(surface, cairo_surface_destroy);
 }
 
-static void BlurAndPaintA8(cairo_t* ctx, cairo_surface_t* a8, int W, int H, int pad,
-                            const int radii[3], double originX, double originY,
+static void BlurAndPaintA8(cairo_t* ctx, cairo_surface_t* a8, int W, int H,
+                            int padX, int padY, const int radii[3],
+                            double originX, double originY,
                             double r, double g, double b, double a)
 {
     cairo_surface_flush(a8);
@@ -132,11 +133,12 @@ static void BlurAndPaintA8(cairo_t* ctx, cairo_surface_t* a8, int W, int H, int 
     }
     cairo_surface_mark_dirty(a8);
     cairo_set_source_rgba(ctx, r, g, b, a);
-    cairo_mask_surface(ctx, a8, originX - pad, originY - pad);
+    cairo_mask_surface(ctx, a8, originX - padX, originY - padY);
 }
 
 void RenderDropShadow(cairo_t* ctx, double sx, double sy, double sw, double sh,
-                      double blur, double r, double g, double b, double a, float cornerR)
+                      double blur, double r, double g, double b, double a, float cornerR,
+                      const Transform& transform)
 {
     if (a < 1e-6 || sw <= 0.0 || sh <= 0.0 || blur <= 0.0)
         return;
@@ -145,30 +147,48 @@ void RenderDropShadow(cairo_t* ctx, double sx, double sy, double sw, double sh,
     GaussBoxRadii(blur, radii);
     const int pad = radii[0] + radii[1] + radii[2] + 1;
 
-    const int W = (int)std::ceil(sw) + 2 * pad;
-    const int H = (int)std::ceil(sh) + 2 * pad;
+    int tPadX = 0, tPadY = 0;
+    if (!transform.IsIdentity()) {
+        const double cx = sw / 2.0, cy = sh / 2.0;
+        const double theta = (double)transform.rotation * Pi / 180.0;
+        const double cosT = std::abs(std::cos(theta));
+        const double sinT = std::abs(std::sin(theta));
+        const double rotExtraX = std::max(0.0, cx * (cosT - 1.0) + cy * sinT);
+        const double rotExtraY = std::max(0.0, cy * (cosT - 1.0) + cx * sinT);
+        const double shearExtraX = std::abs((double)transform.shearX) * cy;
+        const double shearExtraY = std::abs((double)transform.shearY) * cx;
+        tPadX = (int)std::ceil(shearExtraX + rotExtraX);
+        tPadY = (int)std::ceil(shearExtraY + rotExtraY);
+    }
+
+    const int totalPadX = pad + tPadX;
+    const int totalPadY = pad + tPadY;
+    const int W = (int)std::ceil(sw) + 2 * totalPadX;
+    const int H = (int)std::ceil(sh) + 2 * totalPadY;
     if (W <= 0 || H <= 0)
         return;
 
     cairo_surface_t* a8 = cairo_image_surface_create(CAIRO_FORMAT_A8, W, H);
     {
         cairo_t* cc = cairo_create(a8);
-        cairo_translate(cc, pad - sx, pad - sy);
-        float cr = std::clamp(cornerR, 0.0f, (float)(std::min(sw, sh) / 2.0));
-        float rr[4] = {cr, cr, cr, cr};
+        cairo_translate(cc, totalPadX - sx, totalPadY - sy);
+        transform.Apply(cc, sx + sw / 2.0, sy + sh / 2.0);
+        const float cr = std::clamp(cornerR, 0.0f, (float)(std::min(sw, sh) / 2.0));
+        const float rr[4] = {cr, cr, cr, cr};
         RoundRect(cc, sx, sy, sw, sh, rr);
         cairo_set_source_rgba(cc, 0, 0, 0, 1.0);
         cairo_fill(cc);
         cairo_destroy(cc);
     }
 
-    BlurAndPaintA8(ctx, a8, W, H, pad, radii, sx, sy, r, g, b, a);
+    BlurAndPaintA8(ctx, a8, W, H, totalPadX, totalPadY, radii, sx, sy, r, g, b, a);
     cairo_surface_destroy(a8);
 }
 
 void RenderDropShadowFromSurface(cairo_t* ctx, cairo_surface_t* srcA8,
                                   double destX, double destY,
-                                  double blur, double r, double g, double b, double a)
+                                  double blur, double r, double g, double b, double a,
+                                  const Transform& transform)
 {
     if (a < 1e-6 || blur <= 0.0)
         return;
@@ -182,23 +202,48 @@ void RenderDropShadowFromSurface(cairo_t* ctx, cairo_surface_t* srcA8,
     GaussBoxRadii(blur, radii);
     const int pad = radii[0] + radii[1] + radii[2] + 1;
 
-    const int W = srcW + 2 * pad;
-    const int H = srcH + 2 * pad;
+    int tPadX = 0, tPadY = 0;
+    if (!transform.IsIdentity()) {
+        const double cx = srcW / 2.0, cy = srcH / 2.0;
+        const double theta = (double)transform.rotation * Pi / 180.0;
+        const double cosT = std::abs(std::cos(theta));
+        const double sinT = std::abs(std::sin(theta));
+        const double rotExtraX = std::max(0.0, cx * (cosT - 1.0) + cy * sinT);
+        const double rotExtraY = std::max(0.0, cy * (cosT - 1.0) + cx * sinT);
+        const double shearExtraX = std::abs((double)transform.shearX) * cy;
+        const double shearExtraY = std::abs((double)transform.shearY) * cx;
+        tPadX = (int)std::ceil(shearExtraX + rotExtraX);
+        tPadY = (int)std::ceil(shearExtraY + rotExtraY);
+    }
+
+    const int totalPadX = pad + tPadX;
+    const int totalPadY = pad + tPadY;
+    const int W = srcW + 2 * totalPadX;
+    const int H = srcH + 2 * totalPadY;
 
     cairo_surface_t* a8 = cairo_image_surface_create(CAIRO_FORMAT_A8, W, H);
 
-    cairo_surface_flush(srcA8);
-    const uint8_t* srcData = cairo_image_surface_get_data(srcA8);
-    const int srcStride    = cairo_image_surface_get_stride(srcA8);
-    uint8_t* dstData       = cairo_image_surface_get_data(a8);
-    const int dstStride    = cairo_image_surface_get_stride(a8);
-    for (int y = 0; y < srcH; ++y)
-        std::memcpy(dstData + (size_t)(y + pad) * dstStride + pad,
-                    srcData + (size_t)y * srcStride,
-                    (size_t)srcW);
-    cairo_surface_mark_dirty(a8);
+    if (transform.IsIdentity()) {
+        cairo_surface_flush(srcA8);
+        const uint8_t* srcData  = cairo_image_surface_get_data(srcA8);
+        const int      srcStride = cairo_image_surface_get_stride(srcA8);
+        uint8_t*       dstData  = cairo_image_surface_get_data(a8);
+        const int      dstStride = cairo_image_surface_get_stride(a8);
+        for (int y = 0; y < srcH; ++y)
+            std::memcpy(dstData + (size_t)(y + totalPadY) * dstStride + totalPadX,
+                        srcData + (size_t)y * srcStride,
+                        (size_t)srcW);
+        cairo_surface_mark_dirty(a8);
+    } else {
+        cairo_t* cc = cairo_create(a8);
+        cairo_translate(cc, totalPadX, totalPadY);
+        transform.Apply(cc, srcW / 2.0, srcH / 2.0);
+        cairo_set_source_surface(cc, srcA8, 0, 0);
+        cairo_paint(cc);
+        cairo_destroy(cc);
+    }
 
-    BlurAndPaintA8(ctx, a8, W, H, pad, radii, destX, destY, r, g, b, a);
+    BlurAndPaintA8(ctx, a8, W, H, totalPadX, totalPadY, radii, destX, destY, r, g, b, a);
     cairo_surface_destroy(a8);
 }
 

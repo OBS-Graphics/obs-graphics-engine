@@ -32,6 +32,29 @@ struct Rectangle {
     double x, y, width, height;
 };
 
+struct Transform {
+    float rotation{0.0f};  // degrees, applied after shear
+    float shearX{0.0f};
+    float shearY{0.0f};
+
+    bool IsIdentity() const { return rotation == 0.0f && shearX == 0.0f && shearY == 0.0f; }
+
+    // Shear first, then rotation, both centred at (cx, cy) in ctx's current user space.
+    inline void Apply(cairo_t* ctx, double cx, double cy) const
+    {
+        if (IsIdentity()) return;
+        cairo_translate(ctx, cx, cy);
+        if (shearX != 0.0f || shearY != 0.0f) {
+            cairo_matrix_t mat;
+            cairo_matrix_init(&mat, 1.0, (double)shearY, (double)shearX, 1.0, 0.0, 0.0);
+            cairo_transform(ctx, &mat);
+        }
+        if (rotation != 0.0f)
+            cairo_rotate(ctx, rotation * Pi / 180.0);
+        cairo_translate(ctx, -cx, -cy);
+    }
+};
+
 struct Paint {
     enum class Type { None, Solid, Linear, Radial, Image };
     struct Stop {

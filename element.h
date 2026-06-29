@@ -31,9 +31,7 @@ public:
                         double timer, bool isOut,
                         double parentOffX = 0.0, double parentOffY = 0.0) const {}
 
-    virtual void ApplyClipping(cairo_t* ctx, const AnimatedTransform& xf,
-                               const AnimatedTransform* maskXf,
-                               double parentOffX, double parentOffY) const {}
+    virtual void ApplyClipping(cairo_t* ctx, const AnimatedTransform& xf) const {}
 
 protected:
     void AddChildDirect(IElement* child);
