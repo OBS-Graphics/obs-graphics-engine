@@ -61,25 +61,6 @@ void VisualElement::TickData(float dt)
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-// Clips ctx to the wipe rect defined in the element's sheared coordinate space.
-// cairo_set_matrix restores the transform while leaving the clip baked in device coords.
-static void ApplyShearAwareWipeClip(cairo_t* ctx, const Transform& tf,
-                                     double cx, double cy,
-                                     double clipX, double clipY, double clipW, double clipH,
-                                     double boundsW, double boundsH)
-{
-    cairo_matrix_t mat;
-    cairo_get_matrix(ctx, &mat);
-    tf.Apply(ctx, cx, cy);
-    cairo_rectangle(ctx, 0.0, 0.0, boundsW, boundsH);
-    cairo_clip(ctx);
-    cairo_rectangle(ctx, clipX, clipY, clipW, clipH);
-    cairo_clip(ctx);
-    cairo_set_matrix(ctx, &mat);
-}
-
-// ── Private render helpers ────────────────────────────────────────────────────
-
 AnimatedTransform VisualElement::ComposeDataAnimation(const AnimatedTransform& xf) const
 {
     if (m_dataAnimState == DataAnimState::Idle)
@@ -105,9 +86,36 @@ AnimatedTransform VisualElement::ComposeDataAnimation(const AnimatedTransform& x
     return result;
 }
 
-void VisualElement::RenderShadow(cairo_t* ctx, const AnimatedTransform& xf,
-                                  const AnimatedTransform* maskXf,
-                                  double parentOffX, double parentOffY) const
+// Applies this element's clip region (rounded rect + transform + wipe) to ctx,
+// baked into device coords via the save-matrix trick so it persists after restore.
+static void ApplyElementClip(cairo_t* ctx, const VisualElement* elem,
+                              const AnimatedTransform& xf)
+{
+    const auto& b  = elem->GetBounds();
+    const double cx = b.width  / 2.0;
+    const double cy = b.height / 2.0;
+
+    cairo_matrix_t mat;
+    cairo_get_matrix(ctx, &mat);
+
+    elem->GetTransform().Apply(ctx, cx, cy);
+    render::RoundRect(ctx, 0, 0, b.width, b.height, elem->cornerRadius);
+    cairo_clip(ctx);
+
+    const bool isWiping = xf.clipX > 0.0 || xf.clipY > 0.0 ||
+                          xf.clipW < 1.0  || xf.clipH < 1.0;
+    if (isWiping) {
+        cairo_rectangle(ctx, xf.clipX * b.width, xf.clipY * b.height,
+                        xf.clipW * b.width, xf.clipH * b.height);
+        cairo_clip(ctx);
+    }
+
+    cairo_set_matrix(ctx, &mat);
+}
+
+// ── Private render helpers ────────────────────────────────────────────────────
+
+void VisualElement::RenderShadow(cairo_t* ctx, const AnimatedTransform& xf) const
 {
     if (!shadow.enabled) return;
 
@@ -128,12 +136,8 @@ void VisualElement::RenderShadow(cairo_t* ctx, const AnimatedTransform& xf,
                           xf.clipW < 1.0  || xf.clipH < 1.0;
 
     cairo_save(ctx);
-    ApplyMaskClip(ctx, xf, maskXf, parentOffX, parentOffY);
-
     cairo_surface_t* customSurf = CreateShadowSurface(sw, sh);
     if (customSurf) {
-        // Zero out pixels outside the wipe region so only the revealed portion
-        // of the glyph outlines contributes to the blur.
         if (isWiping) {
             cairo_surface_flush(customSurf);
             uint8_t*   pix    = cairo_image_surface_get_data(customSurf);
@@ -167,8 +171,7 @@ void VisualElement::RenderShadow(cairo_t* ctx, const AnimatedTransform& xf,
 }
 
 void VisualElement::RenderChildren(cairo_t* ctx, const AnimatedTransform& effectiveXf,
-                                    double timer, bool isOut,
-                                    double accParentOffX, double accParentOffY) const
+                                    double timer, bool isOut) const
 {
     if (m_children.empty()) return;
 
@@ -182,35 +185,28 @@ void VisualElement::RenderChildren(cairo_t* ctx, const AnimatedTransform& effect
                      [](VisualElement* a, VisualElement* b) { return a->zOrder < b->zOrder; });
 
     cairo_save(ctx);
+
+    if (clipChildren)
+        ApplyElementClip(ctx, this, effectiveXf);
+
     for (VisualElement* child : sorted) {
         const auto& def = isOut ? child->outAnimation : child->inAnimation;
         AnimatedTransform childXf = animation::EvaluateAnimation(
             def, timer, isOut, child->GetSize().width, child->GetSize().height);
 
-        const AnimatedTransform* childMaskXf = nullptr;
-        AnimatedTransform childMaskXfVal;
-        if (child->mask) {
-            const auto& mDef = isOut ? child->mask->outAnimation : child->mask->inAnimation;
-            childMaskXfVal = animation::EvaluateAnimation(
-                mDef, timer, isOut,
-                child->mask->GetSize().width, child->mask->GetSize().height);
-            childMaskXf = &childMaskXfVal;
-        }
-
         cairo_save(ctx);
         cairo_translate(ctx, child->GetPosition().x, child->GetPosition().y);
-        child->Render(ctx, childXf, childMaskXf, timer, isOut, accParentOffX, accParentOffY);
+        child->Render(ctx, childXf, timer, isOut);
         cairo_restore(ctx);
     }
+
     cairo_restore(ctx);
 }
 
 // ── Render ────────────────────────────────────────────────────────────────────
 
 void VisualElement::Render(cairo_t* ctx, const AnimatedTransform& xf,
-                           const AnimatedTransform* maskXf,
-                           double timer, bool isOut,
-                           double parentOffX, double parentOffY) const
+                           double timer, bool isOut) const
 {
     const AnimatedTransform effectiveXf = ComposeDataAnimation(xf);
 
@@ -219,18 +215,12 @@ void VisualElement::Render(cairo_t* ctx, const AnimatedTransform& xf,
 
     cairo_translate(ctx, effectiveXf.offsetX, effectiveXf.offsetY);
 
-    RenderShadow(ctx, effectiveXf, maskXf, parentOffX, parentOffY);
+    RenderShadow(ctx, effectiveXf);
 
     const bool isWiping = effectiveXf.clipX > 0.0 || effectiveXf.clipY > 0.0 ||
                           effectiveXf.clipW < 1.0  || effectiveXf.clipH < 1.0;
-    if (isWiping) {
-        const double cx = m_bounds.width / 2.0;
-        const double cy = m_bounds.height / 2.0;
-        ApplyShearAwareWipeClip(ctx, GetTransform(), cx, cy,
-            effectiveXf.clipX * m_bounds.width, effectiveXf.clipY * m_bounds.height,
-            effectiveXf.clipW * m_bounds.width, effectiveXf.clipH * m_bounds.height,
-            m_bounds.width, m_bounds.height);
-    }
+    if (isWiping)
+        ApplyElementClip(ctx, this, effectiveXf);
 
     const double cx = m_bounds.width / 2.0;
     const double cy = m_bounds.height / 2.0;
@@ -240,11 +230,8 @@ void VisualElement::Render(cairo_t* ctx, const AnimatedTransform& xf,
         cairo_push_group(ctx);
 
     cairo_save(ctx);
-    // Mask clip precedes the element transform: the mask lives in world space and
-    // must not be distorted by this element's shear or rotation.
-    ApplyMaskClip(ctx, effectiveXf, maskXf, parentOffX, parentOffY);
-    GetTransform().Apply(ctx, cx, cy);   // shear, then rotation
-    ApplyClipping(ctx, effectiveXf);     // corner-radius + wipe (in fully-transformed space)
+    GetTransform().Apply(ctx, cx, cy);
+    ApplyClipping(ctx, effectiveXf);
     if (effectiveXf.scale != 1.0 && effectiveXf.scale > 1e-6) {
         cairo_translate(ctx, cx, cy);
         cairo_scale(ctx, effectiveXf.scale, effectiveXf.scale);
@@ -253,8 +240,7 @@ void VisualElement::Render(cairo_t* ctx, const AnimatedTransform& xf,
     RenderContent(ctx);
     cairo_restore(ctx);
 
-    RenderChildren(ctx, effectiveXf, timer, isOut,
-                   parentOffX + effectiveXf.offsetX, parentOffY + effectiveXf.offsetY);
+    RenderChildren(ctx, effectiveXf, timer, isOut);
 
     if (useGroup) {
         cairo_pop_group_to_source(ctx);
@@ -263,24 +249,6 @@ void VisualElement::Render(cairo_t* ctx, const AnimatedTransform& xf,
 }
 
 // ── Clipping ──────────────────────────────────────────────────────────────────
-
-void VisualElement::ApplyMaskClip(cairo_t* ctx, const AnimatedTransform& xf,
-                                   const AnimatedTransform* maskXf,
-                                   double parentOffX, double parentOffY) const
-{
-    if (mask == nullptr) return;
-    Point maskGlobal = mask->GetGlobalPosition();
-    Point selfGlobal = GetGlobalPosition();
-    float mx = (float)(maskGlobal.x - selfGlobal.x) - (float)xf.offsetX - (float)parentOffX;
-    float my = (float)(maskGlobal.y - selfGlobal.y) - (float)xf.offsetY - (float)parentOffY;
-    if (maskXf) {
-        mx += (float)maskXf->offsetX;
-        my += (float)maskXf->offsetY;
-    }
-    const auto& mb = mask->GetBounds();
-    render::RoundRect(ctx, mx, my, mb.width, mb.height, mask->cornerRadius);
-    cairo_clip(ctx);
-}
 
 void VisualElement::ApplyClipping(cairo_t* ctx, const AnimatedTransform& xf) const
 {

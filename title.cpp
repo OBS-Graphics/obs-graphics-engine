@@ -141,19 +141,10 @@ void Title::Render(cairo_t* ctx) const
         AnimatedTransform xf = animation::EvaluateAnimation(
             def, timer, isOut, ve->GetSize().width, ve->GetSize().height);
 
-        const AnimatedTransform* maskXf = nullptr;
-        AnimatedTransform maskXfVal;
-        if (ve->mask) {
-            const auto& mDef = isOut ? ve->mask->outAnimation : ve->mask->inAnimation;
-            maskXfVal = animation::EvaluateAnimation(
-                mDef, timer, isOut, ve->mask->GetSize().width, ve->mask->GetSize().height);
-            maskXf = &maskXfVal;
-        }
-
         Point pos = ve->GetGlobalPosition();
         cairo_save(ctx);
         cairo_translate(ctx, pos.x, pos.y);
-        ve->Render(ctx, xf, maskXf, timer, isOut, 0.0, 0.0);
+        ve->Render(ctx, xf, timer, isOut);
         cairo_restore(ctx);
     }
 }
@@ -356,6 +347,7 @@ static void ParseCommonProperties(VisualElement& el, const json& j)
     if (j.contains("data_anim_in"))  el.dataInAnimation  = ParseAnimationDef(j["data_anim_in"]);
     if (j.contains("data_anim_out")) el.dataOutAnimation = ParseAnimationDef(j["data_anim_out"]);
 
+    el.clipChildren  = j.value("clip_children", false);
     el.fitToChildren = j.value("fit_to_children", false);
     if (j.contains("children_padding") && j["children_padding"].is_array() &&
         j["children_padding"].size() >= 4)
@@ -553,7 +545,7 @@ static json SerializeElement(const IElement* iel, const IElement* root, const As
     if (el->GetParent() && el->GetParent() != root)
         j["parent"] = el->GetParent()->GetId();
 
-    if (el->mask) j["mask"] = el->mask->GetId();
+    if (el->clipChildren) j["clip_children"] = true;
 
     auto fillJ = SerializePaint(el->fill, registerAsset);
     if (!fillJ.is_null()) j["fill"] = fillJ;
@@ -736,13 +728,12 @@ Title Title::Load(const std::string& ogtPath)
     title.m_thumbnail    = std::move(thumbnail);
 
     // Parse elements
-    struct PendingRef { size_t idx; std::string maskId; std::string parentId; };
+    struct PendingRef { size_t idx; std::string parentId; };
     std::vector<PendingRef> pending;
 
     if (j.contains("elements") && j["elements"].is_array()) {
         for (const auto& ej : j["elements"]) {
             pending.push_back({.idx      = title.elements.size(),
-                               .maskId   = ej.value("mask", ""),
                                .parentId = ej.value("parent", "")});
             title.elements.push_back(ParseElement(ej));
         }
@@ -758,12 +749,6 @@ Title Title::Load(const std::string& ogtPath)
     // Resolve mask and parent references
     for (auto& ref : pending) {
         auto& el = *static_cast<VisualElement*>(title.elements[ref.idx].get());
-
-        if (!ref.maskId.empty()) {
-            auto it = idMap.find(ref.maskId);
-            if (it != idMap.end())
-                el.mask = static_cast<VisualElement*>(title.elements[it->second].get());
-        }
 
         if (!ref.parentId.empty()) {
             auto it = idMap.find(ref.parentId);

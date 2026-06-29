@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Diego Lopes <diego95lopes@gmail.com>
 //
-// Visual test: mask clipping with a sheared element.
+// Visual test: clipChildren clipping with a sheared element.
 // Expected:
-//   - The large orange rectangle is visible only inside the green box (the mask).
+//   - The large orange rectangle is visible only inside the green box (the clip parent).
 //   - The orange rectangle's shear is applied to its content, but the clip boundary
-//     remains the green box (axis-aligned) — the mask must NOT be sheared.
+//     is the green box (with its own transform applied) — matching the parent's shape.
 //   - The drop shadow is also clipped to the green box boundary.
 //
 // The green box renders on top (zOrder=1) as a reference overlay.
@@ -25,37 +25,35 @@ Title buildTitle()
     t.width  = 1280;
     t.height = 720;
 
-    // The mask element: a green rectangle that defines the clip boundary.
-    // It also renders visually as a semi-transparent green overlay (zOrder=1).
-    RectangleElement* maskPtr = nullptr;
+    // Clip parent: a green rectangle that clips its children and also renders visibly.
     {
         auto el = std::make_unique<RectangleElement>();
-        el->SetId("mask");
+        el->SetId("clip_box");
         el->SetBounds({390.0, 260.0, 500.0, 200.0});
-        el->fill        = Paint::Solid(0.20, 0.85, 0.35, 0.20);
-        el->stroke      = Paint::Solid(0.20, 0.85, 0.35, 0.85);
-        el->strokeWidth = 2.0f;
-        el->zOrder      = 1;
-        maskPtr = el.get();
-        t.GetRoot()->AddChild(el.get());
-        t.elements.push_back(std::move(el));
-    }
+        el->fill         = Paint::Solid(0.20, 0.85, 0.35, 0.20);
+        el->stroke       = Paint::Solid(0.20, 0.85, 0.35, 0.85);
+        el->strokeWidth  = 2.0f;
+        el->zOrder       = 1;
+        el->clipChildren = true;
 
-    // Large sheared orange rectangle clipped to the green mask.
-    // Extends well beyond the mask on all sides to make clipping obvious.
-    {
-        auto el = std::make_unique<RectangleElement>();
-        el->SetId("sheared");
-        el->SetBounds({190.0, 160.0, 900.0, 400.0});
-        el->fill        = Paint::Solid(0.95, 0.50, 0.10);
-        el->SetShearX(0.5f);
-        el->shadow.enabled  = true;
-        el->shadow.blur     = 25.0;
-        el->shadow.offsetX  = 14.0;
-        el->shadow.offsetY  = 14.0;
-        el->shadow.color[3] = 0.80f;
-        el->mask    = maskPtr;
-        el->zOrder  = 0;
+        // Large sheared orange rectangle — bounds relative to green box.
+        // Extends well beyond the parent on all sides to make clipping obvious.
+        {
+            auto child = std::make_unique<RectangleElement>();
+            child->SetId("sheared");
+            child->SetBounds({-200.0, -100.0, 900.0, 400.0});
+            child->fill         = Paint::Solid(0.95, 0.50, 0.10);
+            child->SetShearX(0.5f);
+            child->shadow.enabled  = true;
+            child->shadow.blur     = 25.0;
+            child->shadow.offsetX  = 14.0;
+            child->shadow.offsetY  = 14.0;
+            child->shadow.color[3] = 0.80f;
+            child->zOrder          = 0;
+            el->AddChild(child.get());
+            t.elements.push_back(std::move(child));
+        }
+
         t.GetRoot()->AddChild(el.get());
         t.elements.push_back(std::move(el));
     }
@@ -65,7 +63,7 @@ Title buildTitle()
         auto el = std::make_unique<TextElement>();
         el->SetId("info");
         el->SetBounds({0.0, 20.0, 1280.0, 26.0});
-        el->text = "Mask Test: orange rect (shearX=0.5) clipped to green box — clip boundary and shadow must not be sheared   [Esc]";
+        el->text = "clipChildren Test: orange rect (shearX=0.5) clipped to green box — shadow also clipped   [Esc]";
         el->font.family      = "Sans";
         el->font.size        = 13.5f;
         el->fill             = Paint::Solid(0.50, 0.50, 0.55);
@@ -82,7 +80,7 @@ Title buildTitle()
 
 int main()
 {
-    SDLRunner app(1280, 720, "Mask + Shear Test");
+    SDLRunner app(1280, 720, "clipChildren + Shear Test");
     Title title = buildTitle();
 
     app.run([&](cairo_t* cr, float) {

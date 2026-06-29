@@ -27,9 +27,7 @@ public:
     virtual Point GetGlobalPosition() const { return {0.0, 0.0}; }
 
     virtual void Render(cairo_t* ctx, const AnimatedTransform& xf,
-                        const AnimatedTransform* maskXf,
-                        double timer, bool isOut,
-                        double parentOffX = 0.0, double parentOffY = 0.0) const {}
+                        double timer, bool isOut) const {}
 
     virtual void ApplyClipping(cairo_t* ctx, const AnimatedTransform& xf) const {}
 

@@ -19,8 +19,7 @@ public:
     float cornerRadius[4]{0.0f, 0.0f, 0.0f, 0.0f};
     float opacity{1.0f};
 
-    VisualElement* mask{nullptr};
-
+    bool clipChildren{false};
     bool fitToChildren{false};
     float childrenPadding[4]{0.0f, 0.0f, 0.0f, 0.0f};
 
@@ -33,9 +32,7 @@ public:
     } shadow{};
 
     void Render(cairo_t* ctx, const AnimatedTransform& xf,
-                const AnimatedTransform* maskXf,
-                double timer, bool isOut,
-                double parentOffX = 0.0, double parentOffY = 0.0) const override;
+                double timer, bool isOut) const override;
 
     void ApplyClipping(cairo_t* ctx, const AnimatedTransform& xf) const override;
 
@@ -66,15 +63,7 @@ private:
     mutable bool m_contentEverSet{false};
 
     AnimatedTransform ComposeDataAnimation(const AnimatedTransform& xf) const;
-    void RenderShadow(cairo_t* ctx, const AnimatedTransform& xf,
-                      const AnimatedTransform* maskXf,
-                      double parentOffX, double parentOffY) const;
+    void RenderShadow(cairo_t* ctx, const AnimatedTransform& xf) const;
     void RenderChildren(cairo_t* ctx, const AnimatedTransform& effectiveXf,
-                        double timer, bool isOut,
-                        double accParentOffX, double accParentOffY) const;
-    // Clips to the mask element bounds in pre-shear coordinate space.
-    // Must be called before any shear transform is applied to ctx.
-    void ApplyMaskClip(cairo_t* ctx, const AnimatedTransform& xf,
-                       const AnimatedTransform* maskXf,
-                       double parentOffX, double parentOffY) const;
+                        double timer, bool isOut) const;
 };
