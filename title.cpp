@@ -122,10 +122,8 @@ void Title::Tick(float dt)
         state = (state == TitleState::AnimatingIn) ? TitleState::Visible : TitleState::Hidden;
 }
 
-void Title::Render(cairo_t* ctx) const
+void Title::RenderElements(cairo_t* ctx) const
 {
-    if (state == TitleState::Hidden) return;
-
     auto* root = GetRoot();
     if (!root) return;
 
@@ -152,6 +150,24 @@ void Title::Render(cairo_t* ctx) const
         ve->Render(ctx, xf, timer, isOut);
         cairo_restore(ctx);
     }
+}
+
+void Title::Render(cairo_t* ctx) const
+{
+    if (state == TitleState::Hidden) return;
+    RenderElements(ctx);
+}
+
+void Title::Render(cairo_t* ctx, int outputWidth, int outputHeight) const
+{
+    if (state == TitleState::Hidden) return;
+
+    cairo_save(ctx);
+    cairo_scale(ctx,
+                static_cast<double>(outputWidth)  / width,
+                static_cast<double>(outputHeight) / height);
+    RenderElements(ctx);
+    cairo_restore(ctx);
 }
 
 // ── Parsers (shared with Load) ────────────────────────────────────────────────

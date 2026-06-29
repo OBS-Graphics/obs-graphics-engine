@@ -41,6 +41,7 @@ struct Title {
 
     void Tick(float dt);
     void Render(cairo_t* ctx) const;
+    void Render(cairo_t* ctx, int outputWidth, int outputHeight) const;
 
     static Title Load(const std::string& ogtPath);
     void Save(const std::string& ogtPath) const;
@@ -49,6 +50,8 @@ struct Title {
     const std::vector<uint8_t>& GetThumbnail() const { return m_thumbnail; }
 
 private:
+    void RenderElements(cairo_t* ctx) const;
+
     double updateTimer{0.0}, prevUpdateTimer{0.0};
     std::string m_tempAssetDir;
     std::vector<uint8_t> m_thumbnail;
