@@ -45,6 +45,9 @@ public:
     // Called by Title::Tick() while Visible to advance data-change animation state.
     void TickData(float dt);
 
+    // Directly sets data-animation state for scrub preview (bypasses content logic).
+    void SetDataPreviewTime(bool isOut, double t);
+
 protected:
     virtual void ApplyContent(const std::string& value) {}
     virtual void RenderContent(cairo_t* ctx) const = 0;

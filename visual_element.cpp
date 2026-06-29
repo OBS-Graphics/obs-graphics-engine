@@ -20,12 +20,18 @@ void VisualElement::SetContent(const std::string& value)
     } else {
         m_currentContent = value;
         ApplyContent(value);
-        m_contentEverSet = true;
-        if (dataInAnimation.type != AnimationType::None) {
+        if (m_contentEverSet && dataInAnimation.type != AnimationType::None) {
             m_dataAnimState  = DataAnimState::AnimatingIn;
             m_dataAnimTimer  = 0.0;
         }
+        m_contentEverSet = true;
     }
+}
+
+void VisualElement::SetDataPreviewTime(bool isOut, double t)
+{
+    m_dataAnimState = isOut ? DataAnimState::AnimatingOut : DataAnimState::AnimatingIn;
+    m_dataAnimTimer = t;
 }
 
 void VisualElement::TickData(float dt)
