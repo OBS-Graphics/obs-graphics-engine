@@ -7,6 +7,7 @@
 #include "element.h"
 #include "visual_element.h"
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,7 @@ enum class TitleState { Hidden, AnimatingIn, Visible, AnimatingOut };
 struct Title {
     std::string id;
     int width{1920}, height{1080};
+    nlohmann::json metadata;  // arbitrary editor/consumer data, preserved round-trip
     std::vector<std::unique_ptr<IElement>> elements;  // [0] is always the auto-created root
     TitleState state{TitleState::Hidden};
     double timer{0.0};

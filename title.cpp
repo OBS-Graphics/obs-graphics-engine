@@ -728,9 +728,10 @@ Title Title::Load(const std::string& ogtPath)
     if (!pathMap.empty()) ReplaceAtPaths(j, pathMap);
 
     Title title;
-    title.id     = j.value("id", "");
-    title.width  = j.value("width", 1920);
-    title.height = j.value("height", 1080);
+    title.id       = j.value("id", "");
+    title.width    = j.value("width", 1920);
+    title.height   = j.value("height", 1080);
+    title.metadata = j.value("metadata", nlohmann::json::object());
     title.m_tempAssetDir = tempDir;
     title.m_thumbnail    = std::move(thumbnail);
 
@@ -814,6 +815,7 @@ void Title::Save(const std::string& ogtPath) const
     j["id"]     = id;
     j["width"]  = width;
     j["height"] = height;
+    if (!metadata.empty()) j["metadata"] = metadata;
 
     IElement* root = GetRoot();
     json elems = json::array();

@@ -68,4 +68,10 @@ public:
 
 protected:
     void RenderContent(cairo_t* ctx) const override;
+    cairo_surface_t* CreateShadowSurface(int w, int h) const override;
+
+private:
+    // Builds a fully configured PangoLayout and computes text origin (ox, oy).
+    // Caller owns the returned layout and must g_object_unref it.
+    PangoLayout* BuildLayout(cairo_t* ctx, double& ox, double& oy) const;
 };

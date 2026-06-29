@@ -52,6 +52,10 @@ protected:
     virtual void RenderContent(cairo_t* ctx) const = 0;
     void ApplyFillAndStroke(cairo_t* ctx) const;
 
+    // Returns an A8 surface representing this element's shadow shape, or nullptr
+    // to fall back to a rounded-rect shadow. Called only when not mid-wipe.
+    virtual cairo_surface_t* CreateShadowSurface(int w, int h) const { return nullptr; }
+
 private:
     enum class DataAnimState { Idle, AnimatingOut, AnimatingIn };
     mutable DataAnimState m_dataAnimState{DataAnimState::Idle};
@@ -59,4 +63,10 @@ private:
     mutable std::string m_currentContent;
     mutable std::string m_pendingContent;
     mutable bool m_contentEverSet{false};
+
+    AnimatedTransform ComposeDataAnimation(const AnimatedTransform& xf) const;
+    void RenderShadow(cairo_t* ctx, const AnimatedTransform& effectiveXf) const;
+    void RenderChildren(cairo_t* ctx, const AnimatedTransform& effectiveXf,
+                        double timer, bool isOut,
+                        double accParentOffX, double accParentOffY) const;
 };

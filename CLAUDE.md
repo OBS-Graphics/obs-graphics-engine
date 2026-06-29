@@ -23,7 +23,7 @@ All sources live at repo root (no `src/` subdirectory):
 - `element_text.h/cpp` — `TextElement : VisualElement`; also owns all text/font enums
 - `element_image.h/cpp` — `ImageElement : VisualElement`
 - `element_qr.h/cpp` — `QrElement : VisualElement`
-- `render_util.h/cpp` — `namespace render`: `RoundRect`, `LoadImageSurface`, `RenderDropShadow` (box-blur shadow pipeline)
+- `render_util.h/cpp` — `namespace render`: `RoundRect`, `LoadImageSurface`, `RenderDropShadow`, `RenderDropShadowFromSurface` (box-blur shadow pipeline)
 - `animation.h/cpp` — `AnimationDef`, `AnimatedTransform`, easing functions
 - `types.hpp` — `Paint`, `Point`, `Size`, `Rectangle`, `ScaleMode` — core shared types
 - `data-source.h/cpp` — `IDataSource`, JSON/CSV data source implementations
@@ -51,7 +51,7 @@ IElement          (element.h)     — id, parent/child tree, virtual Render/Appl
 
 **`Spatial`** — Adds `m_bounds` (local position + size), `m_rotation`, `m_shearX/Y`. Overrides `SetParent` to adjust `m_bounds.x/y` so the element's **world position is preserved** when reparented: saves `GetGlobalPosition()` before changing parent, then subtracts the new parent's world position. When loading from JSON (where x/y are local), `title.cpp` temporarily converts to world coords before calling `AddChild` so SetParent's subtraction is a net no-op.
 
-**`VisualElement`** — All renderable properties: `fill`, `stroke`, `strokeWidth`, `cornerRadius[4]`, `opacity`, `mask`, `shadow{}`, `inAnimation`/`outAnimation`, `dataInAnimation`/`dataOutAnimation`, `zOrder`, `fitToChildren`. Provides `Render()` (common pipeline: shadow → wipe clip → opacity group → shear → content → children). `SetContent(value)` is **final** — it is a no-op if the value hasn't changed, otherwise drives the data-change animation state machine and calls `ApplyContent(value)` at the right moment. Subclasses override `ApplyContent` instead.
+**`VisualElement`** — All renderable properties: `fill`, `stroke`, `strokeWidth`, `cornerRadius[4]`, `opacity`, `mask`, `shadow{}`, `inAnimation`/`outAnimation`, `dataInAnimation`/`dataOutAnimation`, `zOrder`, `fitToChildren`. Provides `Render()` (common pipeline: shadow → wipe clip → opacity group → shear → content → children). `SetContent(value)` is **final** — it is a no-op if the value hasn't changed, otherwise drives the data-change animation state machine and calls `ApplyContent(value)` at the right moment. Subclasses override `ApplyContent` instead. Private helpers `ComposeDataAnimation`, `RenderShadow`, `RenderChildren` keep `Render` concise. Subclasses may override `CreateShadowSurface(w, h) → cairo_surface_t*` to supply a custom A8 shadow mask (nullptr = default rounded-rect shadow).
 
 **`Paint`** — Fill or stroke. `type` = Solid / Linear / Radial / Image. Params layout:
 - Solid: `params[0..3]` = r,g,b,a
@@ -62,9 +62,10 @@ IElement          (element.h)     — id, parent/child tree, virtual Render/Appl
 **`namespace render`** (`render_util.h/cpp`) — Stateless utilities:
 - `RoundRect(ctx, x, y, w, h, r[4])` — rounded-rect path
 - `LoadImageSurface(path)` — stb_image → premultiplied ARGB32 Cairo surface
-- `RenderDropShadow(...)` — 3× separable box-blur (≈Gaussian) of the element shape on an A8 surface, composited as a coloured shadow via `cairo_mask_surface()`. O(pixels) regardless of blur radius. `blur` maps directly to Gaussian sigma via `GaussBoxRadii`.
+- `RenderDropShadow(...)` — 3× separable box-blur (≈Gaussian) of a rounded-rect shape on an A8 surface, composited as a coloured shadow via `cairo_mask_surface()`. O(pixels) regardless of blur radius. `blur` maps directly to Gaussian sigma via `GaussBoxRadii`.
+- `RenderDropShadowFromSurface(ctx, srcA8, destX, destY, blur, r, g, b, a)` — same blur pipeline but takes a pre-rendered A8 surface as the shadow shape. Used by `TextElement` to cast text-shaped shadows.
 
-**`Title`** — Standalone presentation unit. Holds `width`/`height`, an elements vector (root at [0], VisualElements at [1..]), and a state machine: `Hidden → AnimatingIn → Visible → AnimatingOut → Hidden`. `Tick(dt)` advances the animation timer and, while Visible, calls `TickData(dt)` on each VisualElement to drive per-element data-change animations. `Render(cr)` draws direct children of root sorted by `zOrder`. Loads/saves as `.ogt` (zip archive, see below).
+**`Title`** — Standalone presentation unit. Holds `width`/`height`, `metadata` (arbitrary JSON), an elements vector (root at [0], VisualElements at [1..]), and a state machine: `Hidden → AnimatingIn → Visible → AnimatingOut → Hidden`. `Tick(dt)` advances the animation timer and, while Visible, calls `TickData(dt)` on each VisualElement to drive per-element data-change animations. `Render(cr)` draws direct children of root sorted by `zOrder`. Loads/saves as `.ogt` (zip archive, see below).
 
 **`AnimationDef` / `AnimatedTransform`** — In/out animation per element. `animation::EvaluateAnimation(def, t, isOut, width, height)` returns an `AnimatedTransform` (offset, scale, opacity, clip rect). Out animations are true reversals. Per-element data-change animations are stored in `dataInAnimation`/`dataOutAnimation` and driven by `VisualElement::TickData`.
 
@@ -96,6 +97,7 @@ On `Title::Save`: all referenced asset files (whether `@`-prefixed or local path
   "id": "lower_third",
   "width": 1920,
   "height": 1080,
+  "metadata": { "editor_zoom": 1.5, "custom_key": "value" },
   "elements": [
     { "type": "rectangle", "id": "bg", "x": 0, "y": 0, "w": 800, "h": 100 },
     { "type": "image", "id": "logo", "image_path": "@logo.png" },
@@ -104,7 +106,7 @@ On `Title::Save`: all referenced asset files (whether `@`-prefixed or local path
 }
 ```
 
-The root element (`"__root"`) is **not** serialized. Elements without a `parent` field are automatically parented to root on load.
+The root element (`"__root"`) is **not** serialized. Elements without a `parent` field are automatically parented to root on load. The `metadata` object is omitted when empty.
 
 ## JSON schema (element fields)
 
@@ -128,6 +130,7 @@ The root element (`"__root"`) is **not** serialized. Elements without a `parent`
 | `parent` | string | id of parent element; omit to parent directly to root |
 | `anim_in` / `anim_out` | object | In/out animation def: `type`, `easing`, `duration`, `delay` |
 | `data_anim_in` / `data_anim_out` | object | Data-change animation (same structure as anim_in/out) |
+| `metadata` *(title-level)* | object | Arbitrary key-value store for editor/consumer settings; omitted when empty |
 
 ## Conventions
 
@@ -135,6 +138,7 @@ The root element (`"__root"`) is **not** serialized. Elements without a `parent`
 - Mask clipping offset is computed via `GetGlobalPosition()` on both elements — never via raw bounds — so clipping is correct when either element has a parent.
 - Image element always clips to its own bounds before painting, so Cover/FitWidth/FitHeight/None scale modes cannot bleed outside the element rect.
 - Drop shadow is drawn before any wipe/corner/mask clip; during wipe animations it tracks the clip box rather than full element bounds.
+- `TextElement` casts a text-shaped shadow (actual glyph outlines blurred) via `CreateShadowSurface`. During wipe animations the shadow falls back to the bounding-rect shape.
 - Data-change animations compose on top of graphic in/out animations: opacities multiply, offsets add, scales multiply. A wipe data animation overrides the graphic wipe clip.
 - `SOL_NO_THREAD_LOCAL` is defined to avoid Lua thread-local overhead.
 - `-fPIC` is required because this static lib is linked into a shared library (OBS module).
