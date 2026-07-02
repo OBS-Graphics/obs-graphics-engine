@@ -11,6 +11,8 @@ cmake --build build -j$(nproc)
 
 sol2, cpp-zipper, and nlohmann/json are fetched automatically by CPM at configure time. cpp-zipper wraps system minizip (`libminizip-dev` must be installed).
 
+sol2/Lua are only fetched and built when `ENABLE_LUA_SCRIPTING` (default `ON`) is enabled. Pass `-DENABLE_LUA_SCRIPTING=OFF` to skip them entirely — e.g. for a consumer (like the editor) that never uses `ScriptDataSource`.
+
 ## Source files
 
 All sources live at repo root (no `src/` subdirectory):
@@ -27,7 +29,7 @@ All sources live at repo root (no `src/` subdirectory):
 - `animation.h/cpp` — `AnimationDef`, `AnimatedTransform`, easing functions
 - `types.hpp` — `Paint`, `Point`, `Size`, `Rectangle`, `Transform`, `ScaleMode` — core shared types
 - `data-source.h/cpp` — `IDataSource`, JSON/CSV data source implementations
-- `script.h/cpp` — `ScriptDataSource` (Lua via sol2)
+- `script.h/cpp` — `ScriptDataSource` (Lua via sol2); compiled only when `ENABLE_LUA_SCRIPTING=ON` (default)
 - `qr.hpp` — single-header QR encoder (header-only, `QR_IMPLEMENTATION` defined in `qr.cpp`)
 - `stb.cpp` — single translation unit that provides `stb_image` implementation (`STB_IMAGE_IMPLEMENTATION`)
 
@@ -144,6 +146,8 @@ The root element (`"__root"`) is **not** serialized. Elements without a `parent`
 
 ## Lua scripting (`ScriptDataSource`)
 
+Built only when the CMake option `ENABLE_LUA_SCRIPTING` (default `ON`) is enabled; when disabled, `script.h/cpp` are excluded from the `engine` target and Lua/sol2 are never fetched. `engine` publicly defines `ENGINE_HAS_LUA_SCRIPTING` only when the feature is built, so a consumer can guard any conditional `#include "engine/script.h"` with `#ifdef ENGINE_HAS_LUA_SCRIPTING`.
+
 `ScriptDataSource` (`script.h/cpp`) runs a Lua 5.4 script (via sol2) as an `IDataSource`. Contract, all optional except `_get_data`:
 
 | Lua global | Direction | Called |
@@ -162,7 +166,7 @@ These are two independent, one-directional channels — `_on_trigger_in`/`_on_tr
 - Drop shadow always uses the full element bounds (including glyph outlines from `CreateShadowSurface`). During wipe animations a ctx clip limits shadow visibility to the currently-revealed area; the transform (shear + rotation) is applied inside the shadow pipeline, not by the caller.
 - `TextElement` casts a text-shaped shadow (actual glyph outlines blurred) via `CreateShadowSurface`.
 - Data-change animations compose on top of graphic in/out animations: opacities multiply, offsets add, scales multiply. A wipe data animation overrides the graphic wipe clip.
-- `SOL_NO_THREAD_LOCAL` is defined to avoid Lua thread-local overhead.
+- `SOL_NO_THREAD_LOCAL` is defined (only when `ENABLE_LUA_SCRIPTING=ON`) to avoid Lua thread-local overhead.
 - `-fPIC` is required because this static lib is linked into a shared library (OBS module).
 
 ## Include path for consumers

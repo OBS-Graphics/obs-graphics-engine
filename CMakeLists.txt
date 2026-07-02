@@ -6,42 +6,46 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(BUILD_SHARED_LIBS ON)
 
+option(ENABLE_LUA_SCRIPTING "Build Lua/sol2 scripting support (ScriptDataSource)" ON)
+
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/CPM.cmake)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PANGOCAIRO REQUIRED IMPORTED_TARGET pangocairo)
 pkg_check_modules(CAIRO REQUIRED IMPORTED_TARGET cairo)
 
-# Lua: fetch official source and define a library target
-CPMAddPackage(
-    NAME lua
-    GITHUB_REPOSITORY lua/lua
-    GIT_TAG v5.4.6
-    DOWNLOAD_ONLY YES
-)
-if(lua_ADDED)
-    FILE(GLOB lua_sources ${lua_SOURCE_DIR}/*.c)
-    list(REMOVE_ITEM lua_sources "${lua_SOURCE_DIR}/lua.c" "${lua_SOURCE_DIR}/luac.c")
-    add_library(lua STATIC ${lua_sources})
-
-    target_include_directories(lua
-        PUBLIC
-            $<BUILD_INTERFACE:${lua_SOURCE_DIR}>
+if(ENABLE_LUA_SCRIPTING)
+    # Lua: fetch official source and define a library target
+    CPMAddPackage(
+        NAME lua
+        GITHUB_REPOSITORY lua/lua
+        GIT_TAG v5.4.6
+        DOWNLOAD_ONLY YES
     )
-    set_target_properties(lua PROPERTIES POSITION_INDEPENDENT_CODE ON)
-endif()
+    if(lua_ADDED)
+        FILE(GLOB lua_sources ${lua_SOURCE_DIR}/*.c)
+        list(REMOVE_ITEM lua_sources "${lua_SOURCE_DIR}/lua.c" "${lua_SOURCE_DIR}/luac.c")
+        add_library(lua STATIC ${lua_sources})
 
-CPMAddPackage(
-    NAME sol2
-    GITHUB_REPOSITORY ThePhD/sol2
-    GIT_TAG v3.5.0
-    DOWNLOAD_ONLY YES
-)
+        target_include_directories(lua
+            PUBLIC
+                $<BUILD_INTERFACE:${lua_SOURCE_DIR}>
+        )
+        set_target_properties(lua PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    endif()
 
-if (sol2_ADDED)
-  add_library(sol2 INTERFACE IMPORTED)
-  target_include_directories(sol2 INTERFACE ${sol2_SOURCE_DIR}/include)
-  target_link_libraries(sol2 INTERFACE lua)
+    CPMAddPackage(
+        NAME sol2
+        GITHUB_REPOSITORY ThePhD/sol2
+        GIT_TAG v3.5.0
+        DOWNLOAD_ONLY YES
+    )
+
+    if (sol2_ADDED)
+      add_library(sol2 INTERFACE IMPORTED)
+      target_include_directories(sol2 INTERFACE ${sol2_SOURCE_DIR}/include)
+      target_link_libraries(sol2 INTERFACE lua)
+    endif()
 endif()
 
 CPMAddPackage(
@@ -69,7 +73,7 @@ CPMAddPackage(
     DOWNLOAD_ONLY YES
 )
 
-add_library(engine STATIC
+set(engine_sources
     element.cpp
     spatial.cpp
     visual_element.cpp
@@ -81,10 +85,15 @@ add_library(engine STATIC
     animation.cpp
     title.cpp
     data-source.cpp
-    script.cpp
     qr.cpp
     stb.cpp
 )
+
+if(ENABLE_LUA_SCRIPTING)
+    list(APPEND engine_sources script.cpp)
+endif()
+
+add_library(engine STATIC ${engine_sources})
 
 target_include_directories(engine PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/..
@@ -103,10 +112,15 @@ if (cpp_zipper_ADDED)
 endif()
 
 target_link_libraries(engine PUBLIC
-    sol2
     nlohmann_json
-    lua
 )
+
+if(ENABLE_LUA_SCRIPTING)
+    target_link_libraries(engine PUBLIC
+        sol2
+        lua
+    )
+endif()
 
 target_link_libraries(engine PUBLIC
     PkgConfig::PANGOCAIRO
@@ -120,7 +134,10 @@ if(NOT WIN32)
     )
 endif()
 
-target_compile_definitions(engine PRIVATE SOL_NO_THREAD_LOCAL)
+if(ENABLE_LUA_SCRIPTING)
+    target_compile_definitions(engine PRIVATE SOL_NO_THREAD_LOCAL)
+    target_compile_definitions(engine PUBLIC ENGINE_HAS_LUA_SCRIPTING)
+endif()
 
 # ── Test applications (SDL3) ──────────────────────────────────────────────────
 
@@ -142,5 +159,7 @@ if(BUILD_TESTS)
     add_engine_test(test_slide)
     add_engine_test(test_wipe_shear)
     add_engine_test(test_data_anim)
-    add_engine_test(test_script_trigger)
+    if(ENABLE_LUA_SCRIPTING)
+        add_engine_test(test_script_trigger)
+    endif()
 endif()
