@@ -148,6 +148,7 @@ void Title::RenderElements(cairo_t* ctx) const
     if (!root) return;
 
     bool isOut = (state == TitleState::AnimatingOut);
+    bool isVisible = (state == TitleState::Visible);
 
     std::vector<VisualElement*> rootChildren;
     for (IElement* child : root->GetChildren()) {
@@ -159,15 +160,26 @@ void Title::RenderElements(cairo_t* ctx) const
                          return a->zOrder < b->zOrder;
                      });
 
+    // Once Visible, `timer` is reused as the duration/auto-hide countdown
+    // clock (see Tick()), not in-animation progress — render the
+    // fully-settled pose instead of re-evaluating inAnimation from t=0, which
+    // would visibly replay the transition for `duration` seconds every time a
+    // timed title becomes Visible. EvaluateAnimation clamps its internal
+    // progress ratio to [0, 1], so any sufficiently large `t` settles every
+    // element's (and every descendant's) animation regardless of its own
+    // delay/duration — far larger than any realistic animation length.
+    constexpr double kSettledTimer = 1e6;
+
     for (VisualElement* ve : rootChildren) {
         const auto& def = isOut ? ve->outAnimation : ve->inAnimation;
+        double t = isVisible ? kSettledTimer : timer;
         AnimatedTransform xf = animation::EvaluateAnimation(
-            def, timer, isOut, ve->GetSize().width, ve->GetSize().height);
+            def, t, isOut, ve->GetSize().width, ve->GetSize().height);
 
         Point pos = ve->GetGlobalPosition();
         cairo_save(ctx);
         cairo_translate(ctx, pos.x, pos.y);
-        ve->Render(ctx, xf, timer, isOut);
+        ve->Render(ctx, xf, t, isOut);
         cairo_restore(ctx);
     }
 }
