@@ -6,6 +6,8 @@
 #include <iostream>
 #include <optional>
 
+#include "title.h"
+
 ScriptDataSource::ScriptDataSource(const std::string& path)
     : scriptFilePath(path)
 {
@@ -23,6 +25,15 @@ ScriptDataSource::ScriptDataSource(const std::string& path)
     );
     L.safe_script_file(path);
     m_getData = L["_get_data"];
+    m_onTriggerIn = L["_on_trigger_in"];
+    m_onTriggerOut = L["_on_trigger_out"];
+
+    L.set_function("trigger_in", [this](sol::optional<size_t> recordIndex, sol::optional<double> duration) {
+        TriggerIn(recordIndex.value_or(0), duration.value_or(-1.0));
+    });
+    L.set_function("trigger_out", [this] {
+        TriggerOut();
+    });
 }
 
 std::vector<Record> ScriptDataSource::GetData() const
@@ -71,4 +82,27 @@ std::vector<Record> ScriptDataSource::GetData() const
     }
 
     return records;
+}
+
+void ScriptDataSource::TriggerIn(size_t recordIndex, double duration) {
+    m_owner->TriggerIn(recordIndex, duration);
+}
+
+void ScriptDataSource::TriggerOut() {
+    m_owner->TriggerOut();
+}
+
+void ScriptDataSource::SetOwner(Title* owner) {
+    if (owner == m_owner) return;
+    IDataSource::SetOwner(owner);
+    if (!owner) return;
+
+    owner->onTriggerIn.push_back([this](size_t recordIndex, double duration) {
+        if (m_onTriggerIn.valid())
+            m_onTriggerIn(recordIndex, duration);
+    });
+    owner->onTriggerOut.push_back([this] {
+        if (m_onTriggerOut.valid())
+            m_onTriggerOut();
+    });
 }

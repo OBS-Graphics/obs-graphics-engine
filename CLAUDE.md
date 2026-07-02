@@ -69,7 +69,13 @@ IElement          (element.h)     — id, parent/child tree, virtual Render/Appl
 
 **`Title`** — Standalone presentation unit. Holds `width`/`height`, `metadata` (arbitrary JSON), an elements vector (root at [0], VisualElements at [1..]), and a state machine: `Hidden → AnimatingIn → Visible → AnimatingOut → Hidden`. `Tick(dt)` advances the animation timer and, while Visible, calls `TickData(dt)` on each VisualElement to drive per-element data-change animations. `Render(cr)` draws direct children of root sorted by `zOrder`. Loads/saves as `.ogt` (zip archive, see below).
 
+`TriggerIn(recordIndex, duration)` / `TriggerOut()` drive the state machine and are the single choke point for every trigger origin — a direct host call, the `duration` timeout below, or a script's `trigger_in()`/`trigger_out()` (see Lua scripting). Both fire every subscriber in `onTriggerIn`/`onTriggerOut` (`std::vector<std::function<...>>` — multiple listeners, e.g. a host UI and a `ScriptDataSource`, can coexist without clobbering each other).
+
+`duration` (seconds, default `-1.0` = no auto-hide) is passed to `TriggerIn` and, while `Visible`, `Tick` auto-fires `TriggerOut()` once that much Visible-time has elapsed — a "timed title." The bound `IDataSource` is polled on a fixed 0.25s cadence via `UpdateData()`, but **only while `Visible`** — `TriggerIn` still applies data instantly when called from `Hidden` (`SetContentInstant`), it just doesn't get periodically re-polled outside `Visible`.
+
 **`AnimationDef` / `AnimatedTransform`** — In/out animation per element. `animation::EvaluateAnimation(def, t, isOut, width, height)` returns an `AnimatedTransform` (offset, scale, opacity, clip rect). Out animations are true reversals. Per-element data-change animations are stored in `dataInAnimation`/`dataOutAnimation` and driven by `VisualElement::TickData`.
+
+**`IDataSource`** (`data-source.h`) — Interface for records bound to a `Title` via `Title::dataSource`. Pure virtual `GetData() -> std::vector<Record>` (`Record = unordered_map<string,string>`) and `GetFilePath()`. `SetOwner(Title*)` is virtual — the base just stores `m_owner`, but `Title::UpdateData()` calls it on every pull, so a subclass can override it to do one-time setup once it learns its owner (e.g. `ScriptDataSource` registers itself onto `owner->onTriggerIn`/`onTriggerOut` there — guard against re-registering by checking `owner == m_owner` first, since `SetOwner` is called repeatedly).
 
 ## .ogt file format
 
@@ -135,6 +141,18 @@ The root element (`"__root"`) is **not** serialized. Elements without a `parent`
 | `anim_in` / `anim_out` | object | In/out animation def: `type`, `easing`, `duration`, `delay` |
 | `data_anim_in` / `data_anim_out` | object | Data-change animation (same structure as anim_in/out) |
 | `metadata` *(title-level)* | object | Arbitrary key-value store for editor/consumer settings; omitted when empty |
+
+## Lua scripting (`ScriptDataSource`)
+
+`ScriptDataSource` (`script.h/cpp`) runs a Lua 5.4 script (via sol2) as an `IDataSource`. Contract, all optional except `_get_data`:
+
+| Lua global | Direction | Called |
+|---|---|---|
+| `_get_data()` | script → engine | Every `GetData()` pull (instant update, or the 0.25s Visible-only poll). Must return a table of record-tables (string/number/bool values, converted to strings). |
+| `_on_trigger_in(recordIndex, duration)` / `_on_trigger_out()` | engine → script | Whenever the owning `Title` is triggered in/out, from **any** origin (host call, `duration` timeout, or this script's own `trigger_in`/`trigger_out`) — wired up in `ScriptDataSource::SetOwner` as a subscriber on `Title::onTriggerIn`/`onTriggerOut`, exactly like a host UI listener would be. |
+| `trigger_in(recordIndex?, duration?)` / `trigger_out()` | script → engine | Bound into the Lua globals in the constructor; forwards to `m_owner->TriggerIn/TriggerOut`. Lets a script drive its own title's state machine. |
+
+These are two independent, one-directional channels — `_on_trigger_in`/`_on_trigger_out` do not imply `trigger_in`/`trigger_out` and vice versa. See `tests/test_script_trigger.cpp` for exercised examples of each.
 
 ## Conventions
 

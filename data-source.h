@@ -9,10 +9,16 @@
 
 using Record = std::unordered_map<std::string, std::string>;
 
+struct Title;
 struct IDataSource {
     virtual ~IDataSource() = default;
     virtual std::vector<Record> GetData() const = 0;
     virtual std::string GetFilePath() const = 0;
+
+    virtual void SetOwner(Title* owner) { m_owner = owner; }
+
+protected:
+    Title* m_owner{nullptr};
 };
 
 struct JsonFileDataSource : public IDataSource {

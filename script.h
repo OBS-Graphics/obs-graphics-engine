@@ -18,7 +18,15 @@ public:
         return scriptFilePath;
     }
 
+    void SetOwner(Title* owner) override;
+
 private:
     sol::state L;
     sol::protected_function m_getData;
+    sol::protected_function m_onTriggerIn;
+    sol::protected_function m_onTriggerOut;
+
+    // Lua utilities for scripting
+    void TriggerIn(size_t recordIndex = 0, double duration = -1.0);
+    void TriggerOut();
 };

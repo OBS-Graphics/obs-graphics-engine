@@ -51,29 +51,38 @@ VisualElement& Title::GetById(const std::string& id)
     throw std::runtime_error("Element with id '" + id + "' not found");
 }
 
-void Title::TriggerIn(size_t recordIndex)
+void Title::TriggerIn(size_t recordIndex, double duration)
 {
     dataRecordIndex = recordIndex;
     UpdateData();
     state = TitleState::AnimatingIn;
     timer = 0.0;
+    this->duration = duration;
+
+    for (auto& cb : onTriggerIn)
+        if (cb) cb(recordIndex, duration);
 }
 
 void Title::TriggerOut()
 {
     state = TitleState::AnimatingOut;
     timer = 0.0;
+
+    for (auto& cb : onTriggerOut)
+        if (cb) cb();
 }
 
 void Title::UpdateData()
 {
     if (!dataSource) return;
+    dataSource->SetOwner(this);
+
+    bool instant = (state == TitleState::Hidden);
 
     auto data = dataSource->GetData();
     if (data.empty()) return;
 
     const auto& record = data[dataRecordIndex % data.size()];
-    bool instant = (state == TitleState::Hidden);
     for (auto&& [key, value] : record) {
         try {
             auto& el = GetById(key);
@@ -89,21 +98,29 @@ void Title::UpdateData()
 
 void Title::Tick(float dt)
 {
-    updateTimer += dt;
-
-    const double updateInterval = 0.25;
-    int prevSlot = static_cast<int>(prevUpdateTimer / updateInterval);
-    int currSlot = static_cast<int>(updateTimer / updateInterval);
-    if (prevSlot != currSlot)
-        UpdateData();
-    prevUpdateTimer = updateTimer;
-
     if (state == TitleState::Visible) {
+        updateTimer += dt;
+
+        const double updateInterval = 0.25;
+        int prevSlot = static_cast<int>(prevUpdateTimer / updateInterval);
+        int currSlot = static_cast<int>(updateTimer / updateInterval);
+        if (prevSlot != currSlot)
+            UpdateData();
+        prevUpdateTimer = updateTimer;
+
         for (size_t i = 1; i < elements.size(); ++i)
             static_cast<VisualElement*>(elements[i].get())->TickData(dt);
+
+        if (duration >= 0.0) {
+            timer += dt;
+            if (timer >= duration)
+                TriggerOut();
+        }
+
+        return;
     }
 
-    if (state == TitleState::Hidden || state == TitleState::Visible)
+    if (state == TitleState::Hidden)
         return;
 
     timer += dt;
@@ -118,8 +135,11 @@ void Title::Tick(float dt)
         }
     }
 
-    if (allDone)
+    if (allDone) {
         state = (state == TitleState::AnimatingIn) ? TitleState::Visible : TitleState::Hidden;
+        if (state == TitleState::Visible)
+            timer = 0.0;
+    }
 }
 
 void Title::RenderElements(cairo_t* ctx) const

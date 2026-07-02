@@ -74,6 +74,7 @@ Headers are then available as:
 | `Paint` | Solid, Linear, Radial, or Image fill — normalized 0–1 gradient coordinates. |
 | `AnimationDef` | Per-element animation: type, easing, duration, delay. |
 | `IDataSource` | Interface for JSON/CSV/Lua data sources bound to a Title. |
+| `ScriptDataSource` | Lua-scripted data source (via sol2) — can also drive and react to a Title's trigger state. |
 
 ## .ogt file format
 
@@ -104,4 +105,10 @@ t.Render(cairo_ctx);
 Hidden ──TriggerIn()──▶ AnimatingIn ──▶ Visible ──TriggerOut()──▶ AnimatingOut ──▶ Hidden
 ```
 
-While `Visible`, `Tick()` also advances per-element data-change animations driven by the bound `IDataSource`.
+While `Visible`, `Tick()` also advances per-element data-change animations and polls the bound `IDataSource` on a fixed 0.25s interval. Pass a `duration` to `TriggerIn()` to auto-`TriggerOut()` after that many seconds Visible (a "timed title"); omit it (or pass `-1`) to stay Visible until explicitly triggered out.
+
+`Title::onTriggerIn` / `onTriggerOut` are lists of callbacks fired whenever `TriggerIn()`/`TriggerOut()` runs, from any origin — a host UI, the `duration` timeout, or a script's own `trigger_in()`/`trigger_out()` — so a host application can react to a title's state changing regardless of what caused it.
+
+## Data sources & Lua scripting
+
+`IDataSource` implementations (`JsonFileDataSource`, `CsvFileDataSource`, `ScriptDataSource`) supply per-element content, looked up by element id and applied via `SetContent`/`SetContentInstant`. `ScriptDataSource` runs a Lua script that must define `_get_data()` (returns a table of records), and may optionally define `_on_trigger_in(recordIndex, duration)` / `_on_trigger_out()` to react whenever the owning Title is triggered. Scripts can also call the bound `trigger_in(recordIndex, duration)` / `trigger_out()` Lua globals to drive the Title themselves.

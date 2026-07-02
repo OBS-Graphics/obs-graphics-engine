@@ -6,6 +6,7 @@
 #include "data-source.h"
 #include "element.h"
 #include "visual_element.h"
+#include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -20,10 +21,17 @@ struct Title {
     std::vector<std::unique_ptr<IElement>> elements;  // [0] is always the auto-created root
     TitleState state{TitleState::Hidden};
     double timer{0.0};
+    double duration{-1.0};
     int zOrder{0};
 
     IDataSource* dataSource{nullptr};
     size_t dataRecordIndex{0};
+
+    // Fired whenever TriggerIn/TriggerOut runs, regardless of origin (host call,
+    // duration timeout, or a script's trigger_in()/trigger_out()). Multiple
+    // subscribers (e.g. a host UI and a ScriptDataSource) can listen at once.
+    std::vector<std::function<void(size_t recordIndex, double duration)>> onTriggerIn;
+    std::vector<std::function<void()>> onTriggerOut;
 
     Title();
     ~Title();
@@ -34,7 +42,7 @@ struct Title {
 
     IElement* GetRoot() const { return elements.empty() ? nullptr : elements[0].get(); }
 
-    void TriggerIn(size_t recordIndex = 0);
+    void TriggerIn(size_t recordIndex = 0, double duration = -1.0);
     void TriggerOut();
     void UpdateData();
     VisualElement& GetById(const std::string& id);
