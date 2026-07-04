@@ -52,6 +52,13 @@ if(ENABLE_LUA_SCRIPTING)
     # mbedTLS: TLS backend for IXWebSocket's HttpClient, source-fetched via
     # CPM (same pattern as lua/sol2 above) so no system SSL package is needed
     # on any platform.
+    #
+    # BUILD_SHARED_LIBS OFF is required for the same reason as ixwebsocket's
+    # below: mbedtls's vendored 3rdparty helper libs (everest, p256-m) are
+    # plain add_library() calls with no Windows dllexport annotations, so left
+    # to inherit the project-wide `BUILD_SHARED_LIBS ON` they build as DLLs
+    # with zero exported symbols — MSVC then emits no import .lib for them,
+    # and the link against e.g. everest.lib fails with LNK1181 on Windows.
     CPMAddPackage(
         NAME mbedtls
         GITHUB_REPOSITORY Mbed-TLS/mbedtls
@@ -59,6 +66,7 @@ if(ENABLE_LUA_SCRIPTING)
         OPTIONS
             "ENABLE_PROGRAMS OFF"
             "ENABLE_TESTING OFF"
+            "BUILD_SHARED_LIBS OFF"
     )
 
     # IXWebSocket: only HttpClient is used today; WebSocket support is unused
@@ -94,7 +102,7 @@ if(ENABLE_LUA_SCRIPTING)
         target_compile_definitions(ixwebsocket PRIVATE IXWEBSOCKET_USE_MBED_TLS_MIN_VERSION_3)
     endif()
 
-    foreach(pic_target ixwebsocket mbedtls mbedcrypto mbedx509)
+    foreach(pic_target ixwebsocket mbedtls mbedcrypto mbedx509 everest p256m)
         if(TARGET ${pic_target})
             set_target_properties(${pic_target} PROPERTIES POSITION_INDEPENDENT_CODE ON)
         endif()
