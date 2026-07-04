@@ -63,6 +63,11 @@ if(ENABLE_LUA_SCRIPTING)
 
     # IXWebSocket: only HttpClient is used today; WebSocket support is unused
     # but comes along for a possible future feature (see CLAUDE.md).
+    #
+    # BUILD_SHARED_LIBS is forced OFF here (scoped to this add_subdirectory
+    # call only, via CPM's OPTIONS mechanism) because it would otherwise
+    # inherit the project-wide `set(BUILD_SHARED_LIBS ON)` above and build
+    # ixwebsocket as a .so — breaking static linkage into `engine`.
     CPMAddPackage(
         NAME ixwebsocket
         GITHUB_REPOSITORY machinezone/IXWebSocket
@@ -70,6 +75,8 @@ if(ENABLE_LUA_SCRIPTING)
         OPTIONS
             "USE_TLS ON"
             "USE_MBED_TLS ON"
+            "BUILD_SHARED_LIBS OFF"
+            "IXWEBSOCKET_INSTALL OFF"
     )
 
     # IXWebSocket's own CMakeLists resolves mbedTLS via `find_package(MbedTLS
