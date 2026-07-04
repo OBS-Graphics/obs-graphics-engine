@@ -79,7 +79,10 @@ void Title::UpdateData()
 
     bool instant = (state == TitleState::Hidden);
 
-    auto data = dataSource->GetData();
+    // Instant apply (Hidden -> triggered) must wait for real, fresh data
+    // before the title animates in; the periodic Visible-state poll must
+    // never block the caller. See IDataSource::GetDataBlocking().
+    auto data = instant ? dataSource->GetDataBlocking() : dataSource->GetData();
     if (data.empty()) return;
 
     const auto& record = data[dataRecordIndex % data.size()];
@@ -98,6 +101,14 @@ void Title::UpdateData()
 
 void Title::Tick(float dt)
 {
+    // Runs every tick regardless of state (including Hidden, which nothing
+    // else here polls) so a script's own trigger_in()/trigger_out() call is
+    // guaranteed to eventually take effect, not just when something else
+    // happens to call UpdateData()/GetData() first. No-op for data sources
+    // with nothing to pump (see IDataSource::PumpEvents).
+    if (dataSource)
+        dataSource->PumpEvents();
+
     if (state == TitleState::Visible) {
         updateTimer += dt;
 

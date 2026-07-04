@@ -46,6 +46,52 @@ if(ENABLE_LUA_SCRIPTING)
       target_include_directories(sol2 INTERFACE ${sol2_SOURCE_DIR}/include)
       target_link_libraries(sol2 INTERFACE lua)
     endif()
+
+    find_package(Threads REQUIRED)
+
+    # mbedTLS: TLS backend for IXWebSocket's HttpClient, source-fetched via
+    # CPM (same pattern as lua/sol2 above) so no system SSL package is needed
+    # on any platform.
+    CPMAddPackage(
+        NAME mbedtls
+        GITHUB_REPOSITORY Mbed-TLS/mbedtls
+        GIT_TAG v3.6.2
+        OPTIONS
+            "ENABLE_PROGRAMS OFF"
+            "ENABLE_TESTING OFF"
+    )
+
+    # IXWebSocket: only HttpClient is used today; WebSocket support is unused
+    # but comes along for a possible future feature (see CLAUDE.md).
+    CPMAddPackage(
+        NAME ixwebsocket
+        GITHUB_REPOSITORY machinezone/IXWebSocket
+        GIT_TAG v11.4.6
+        OPTIONS
+            "USE_TLS ON"
+            "USE_MBED_TLS ON"
+    )
+
+    # IXWebSocket's own CMakeLists resolves mbedTLS via `find_package(MbedTLS
+    # REQUIRED)` and its bundled CMake/FindMbedTLS.cmake module, expecting
+    # MBEDTLS_INCLUDE_DIRS/MBEDTLS_LIBRARIES to get populated by that module.
+    # Since CMake >= 3.24 transparently redirects find_package(MbedTLS) to the
+    # CPM-fetched `mbedtls` package above (bypassing the Module entirely), that
+    # find_package call succeeds without ever setting those variables, leaving
+    # `ixwebsocket` with no mbedtls include path or libraries at all. Wire them
+    # up explicitly so the target actually builds against our fetched mbedtls.
+    if (TARGET ixwebsocket)
+        target_include_directories(ixwebsocket PRIVATE ${mbedtls_SOURCE_DIR}/include)
+        target_link_libraries(ixwebsocket PRIVATE mbedtls mbedx509 mbedcrypto)
+        # mbedtls 3.x header layout; IXSocketMbedTLS.cpp guards on this macro.
+        target_compile_definitions(ixwebsocket PRIVATE IXWEBSOCKET_USE_MBED_TLS_MIN_VERSION_3)
+    endif()
+
+    foreach(pic_target ixwebsocket mbedtls mbedcrypto mbedx509)
+        if(TARGET ${pic_target})
+            set_target_properties(${pic_target} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+        endif()
+    endforeach()
 endif()
 
 CPMAddPackage(
@@ -90,7 +136,7 @@ set(engine_sources
 )
 
 if(ENABLE_LUA_SCRIPTING)
-    list(APPEND engine_sources script.cpp)
+    list(APPEND engine_sources script.cpp lua_http.cpp)
 endif()
 
 add_library(engine STATIC ${engine_sources})
@@ -119,6 +165,8 @@ if(ENABLE_LUA_SCRIPTING)
     target_link_libraries(engine PUBLIC
         sol2
         lua
+        ixwebsocket
+        Threads::Threads
     )
 endif()
 
@@ -161,5 +209,6 @@ if(BUILD_TESTS)
     add_engine_test(test_data_anim)
     if(ENABLE_LUA_SCRIPTING)
         add_engine_test(test_script_trigger)
+        add_engine_test(test_script_http)
     endif()
 endif()

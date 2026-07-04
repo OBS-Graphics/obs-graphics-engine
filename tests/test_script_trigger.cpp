@@ -6,45 +6,32 @@
 //    with both a host-UI-style listener and ScriptDataSource's own listener
 //    (registered via SetOwner) coexisting on the same event lists
 //  - ScriptDataSource's listener relays to the Lua _on_trigger_in/_on_trigger_out
-//    functions, if the script defines them
+//    functions, if the script defines them (now via ScriptDataSource's own
+//    worker thread, so these assertions poll-with-timeout instead of checking
+//    immediately)
 //  - Lua scripts can call trigger_in()/trigger_out() to drive the owning Title
+//    (marshaled back to the host thread through GetData()'s pending-trigger
+//    drain, so these also poll)
 //  - Title::duration auto-fires TriggerOut() once Visible time elapses
 //  - The periodic data poll in Title::Tick only runs while state == Visible
+//  - TriggerIn from Hidden blocks (via GetDataBlocking) until real, fresh data
+//    is available, even when _get_data is slow — no polling needed there
 
 #include "title.h"
 #include "element_rectangle.h"
+#include "element_text.h"
 #include "script.h"
+#include "script_test_util.h"
 
-#include <cstdio>
 #include <cstdlib>
-#include <filesystem>
-#include <fstream>
 #include <string>
 
-namespace fs = std::filesystem;
+using script_test_util::Check;
+using script_test_util::g_failures;
+using script_test_util::PollUntil;
+using script_test_util::WriteScript;
 
 namespace {
-
-int g_failures = 0;
-
-void Check(bool cond, const char* what)
-{
-    if (!cond) {
-        std::fprintf(stderr, "FAIL: %s\n", what);
-        ++g_failures;
-    } else {
-        std::printf("ok: %s\n", what);
-    }
-}
-
-std::string WriteScript(const std::string& name, const std::string& content)
-{
-    std::string path = (fs::temp_directory_path() / ("ogt-test-" + name + ".lua")).string();
-    std::ofstream f(path, std::ios::trunc);
-    f << content;
-    f.close();
-    return path;
-}
 
 std::unique_ptr<RectangleElement> MakeShortAnimElement(const char* id)
 {
@@ -89,6 +76,8 @@ end
     double cppDur = -999.0;
     // A host-UI-style listener, registered alongside whatever ScriptDataSource
     // registers for itself once it learns its owner (see Title::UpdateData).
+    // These fire synchronously on the host thread, regardless of
+    // ScriptDataSource's worker-thread internals.
     title.onTriggerIn.push_back([&](size_t idx, double dur) { cppIn = true; cppIdx = idx; cppDur = dur; });
     title.onTriggerOut.push_back([&] { cppOut = true; });
 
@@ -100,15 +89,37 @@ end
     title.TriggerOut();
     Check(cppOut, "ScenarioA: host UI onTriggerOut listener fired");
 
-    auto records = ds.GetData();
-    Check(!records.empty(), "ScenarioA: GetData returned a record");
-    if (!records.empty()) {
-        auto& rec = records[0];
-        Check(rec["in_count"] == "1", "ScenarioA: Lua _on_trigger_in fired exactly once");
-        Check(rec["out_count"] == "1", "ScenarioA: Lua _on_trigger_out fired exactly once");
-        Check(rec["last_idx"] == "4", "ScenarioA: Lua _on_trigger_in saw recordIndex 4");
-        Check(rec["last_dur"] == "1.25", "ScenarioA: Lua _on_trigger_in saw duration 1.25");
-    }
+    // The Lua-side _on_trigger_in/_on_trigger_out only run once ScriptDataSource's
+    // worker thread dequeues the job and, separately, _get_data() is re-run —
+    // poll ds.GetData() (which never blocks) until the counters catch up.
+    Check(
+        PollUntil([&] {
+            auto recs = ds.GetData();
+            return !recs.empty() && recs[0].count("in_count") && recs[0].at("in_count") == "1";
+        }),
+        "ScenarioA: Lua _on_trigger_in fired exactly once (async)"
+    );
+    Check(
+        PollUntil([&] {
+            auto recs = ds.GetData();
+            return !recs.empty() && recs[0].count("out_count") && recs[0].at("out_count") == "1";
+        }),
+        "ScenarioA: Lua _on_trigger_out fired exactly once (async)"
+    );
+    Check(
+        PollUntil([&] {
+            auto recs = ds.GetData();
+            return !recs.empty() && recs[0].count("last_idx") && recs[0].at("last_idx") == "4";
+        }),
+        "ScenarioA: Lua _on_trigger_in saw recordIndex 4 (async)"
+    );
+    Check(
+        PollUntil([&] {
+            auto recs = ds.GetData();
+            return !recs.empty() && recs[0].count("last_dur") && recs[0].at("last_dur") == "1.25";
+        }),
+        "ScenarioA: Lua _on_trigger_in saw duration 1.25 (async)"
+    );
 }
 
 // ── Scenario B: Lua trigger_in()/trigger_out() drive the owning Title ──────────
@@ -131,8 +142,16 @@ end
     ds.SetOwner(&title);
 
     Check(title.state == TitleState::Hidden, "ScenarioB: Title starts Hidden");
-    ds.GetData();  // Lua calls trigger_in(9, 2.5) -> Title::TriggerIn(9, 2.5)
-    Check(title.state == TitleState::AnimatingIn, "ScenarioB: Lua trigger_in() drove state to AnimatingIn");
+    // Lua's trigger_in() now only stashes a pending request on the worker
+    // thread; ds.GetData() (called here on the host thread) is what drains
+    // and applies it to Title, so poll instead of asserting immediately.
+    Check(
+        PollUntil([&] {
+            ds.GetData();
+            return title.state == TitleState::AnimatingIn;
+        }),
+        "ScenarioB: Lua trigger_in() drove state to AnimatingIn (async)"
+    );
     Check(title.dataRecordIndex == 9, "ScenarioB: Lua trigger_in() forwarded recordIndex");
     Check(title.duration == 2.5, "ScenarioB: Lua trigger_in() forwarded duration");
 
@@ -152,8 +171,88 @@ end
     ds2.SetOwner(&title2);
     title2.state = TitleState::Visible;
 
-    ds2.GetData();  // Lua calls trigger_out() -> Title::TriggerOut()
-    Check(title2.state == TitleState::AnimatingOut, "ScenarioB: Lua trigger_out() drove state to AnimatingOut");
+    Check(
+        PollUntil([&] {
+            ds2.GetData();
+            return title2.state == TitleState::AnimatingOut;
+        }),
+        "ScenarioB: Lua trigger_out() drove state to AnimatingOut (async)"
+    );
+}
+
+// ── Scenario F: a script's own trigger_in() takes effect purely through
+// Title::Tick's unconditional PumpEvents() call, with no direct GetData() or
+// host-driven TriggerIn() call at all. This is the production path for a
+// title sitting idle Hidden whose script decides to trigger itself — the gap
+// the design review caught: nothing else ever polls a Hidden title's data
+// source, so without this pump the self-trigger would never apply.
+
+void ScenarioF()
+{
+    std::string path = WriteScript("scenario_f", R"lua(
+local fired = false
+function _get_data()
+    if not fired then
+        fired = true
+        trigger_in(7, -1.0)
+    end
+    return {}
+end
+)lua");
+
+    ScriptDataSource ds(path);
+    Title title;
+    title.dataSource = &ds;
+    ds.SetOwner(&title);
+
+    Check(title.state == TitleState::Hidden, "ScenarioF: Title starts Hidden");
+    // Only Title::Tick is driven here — never ds.GetData()/title.TriggerIn()
+    // directly. No elements are attached, so once triggered, Tick's
+    // all-done check is vacuously true and state advances straight past
+    // AnimatingIn to Visible within the same tick — check "left Hidden",
+    // not a specific intermediate state.
+    Check(
+        PollUntil([&] {
+            title.Tick(0.01f);
+            return title.state != TitleState::Hidden;
+        }),
+        "ScenarioF: Lua's own trigger_in() applied via Title::Tick's PumpEvents while Hidden"
+    );
+    Check(title.dataRecordIndex == 7, "ScenarioF: self-trigger forwarded recordIndex");
+}
+
+// ── Scenario E: TriggerIn from Hidden waits for real, fresh data ───────────────
+// (even when _get_data is slow) before returning — no polling needed here,
+// unlike every other async path above. This is what makes GetDataBlocking()
+// meaningfully different from the plain non-blocking GetData().
+
+void ScenarioE()
+{
+    std::string path = WriteScript("scenario_e", R"lua(
+function _get_data()
+    -- Deliberately slow: a busy-wait, standing in for a slow HTTP call.
+    local start = os.clock()
+    while os.clock() - start < 0.2 do end
+    return { { greeting = "hello" } }
+end
+)lua");
+
+    ScriptDataSource ds(path);
+    Title title;
+    title.dataSource = &ds;
+
+    auto el = std::make_unique<TextElement>();
+    el->SetId("greeting");
+    title.GetRoot()->AddChild(el.get());
+    TextElement* elPtr = el.get();
+    title.elements.push_back(std::move(el));
+
+    Check(title.state == TitleState::Hidden, "ScenarioE: Title starts Hidden");
+    title.TriggerIn();  // Hidden -> instant path must wait for real data before returning
+    Check(
+        elPtr->text == "hello",
+        "ScenarioE: TriggerIn-from-Hidden blocked until fresh (slow) data was applied, no poll needed"
+    );
 }
 
 } // namespace
@@ -162,6 +261,8 @@ int main()
 {
     ScenarioA();
     ScenarioB();
+    ScenarioF();
+    ScenarioE();
 
     // Scenario C: timed titles — duration auto-fires TriggerOut() once Visible.
     {
