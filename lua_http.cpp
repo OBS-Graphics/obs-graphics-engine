@@ -5,13 +5,16 @@
 
 #include <sol/sol.hpp>
 
-#include <ixwebsocket/IXHttpClient.h>
+#include <curl/curl.h>
 
+#include <map>
 #include <mutex>
 #include <string>
 
 namespace lua_http {
 namespace {
+
+using ResponseHeaders = std::multimap<std::string, std::string>;
 
 std::mutex g_gateMutex;
 PermissionGate g_gate;  // default-constructed = empty = allow all
@@ -22,12 +25,50 @@ bool IsRequestAllowed(const std::string& method, const std::string& url)
     return !g_gate || g_gate(method, url);
 }
 
+std::once_flag g_curlInitFlag;
+void EnsureCurlGlobalInit()
+{
+    std::call_once(g_curlInitFlag, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
+}
+
+size_t WriteBodyCallback(char* ptr, size_t size, size_t nmemb, void* userdata)
+{
+    static_cast<std::string*>(userdata)->append(ptr, size * nmemb);
+    return size * nmemb;
+}
+
+// Fires once per header line of every response in the redirect chain
+// (including intermediate hops) — clear on each new status line so only the
+// final response's headers survive.
+size_t WriteHeaderCallback(char* buffer, size_t size, size_t nitems, void* userdata)
+{
+    auto* headers = static_cast<ResponseHeaders*>(userdata);
+    std::string line(buffer, size * nitems);
+    while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
+        line.pop_back();
+
+    if (line.rfind("HTTP/", 0) == 0) {
+        headers->clear();
+        return size * nitems;
+    }
+
+    auto colon = line.find(':');
+    if (colon == std::string::npos) return size * nitems;
+
+    std::string key = line.substr(0, colon);
+    std::string value = line.substr(colon + 1);
+    size_t start = value.find_first_not_of(' ');
+    value = (start == std::string::npos) ? std::string() : value.substr(start);
+    headers->emplace(std::move(key), std::move(value));
+    return size * nitems;
+}
+
 sol::table BuildHttpResponseTable(
     sol::state_view lua,
     bool ok,
     int status,
     const std::string& body,
-    const ix::WebSocketHttpHeaders& headers,
+    const ResponseHeaders& headers,
     const std::string& errorMsg
 )
 {
@@ -56,20 +97,61 @@ sol::table DoRequest(
     if (!IsRequestAllowed(verb, url))
         return BuildHttpResponseTable(lua, false, 0, "", {}, "network access denied by policy");
 
-    ix::HttpClient client;
-    auto args = client.createRequest(url, verb);
-    args->connectTimeout = static_cast<int>(kRequestTimeout.count());
-    args->transferTimeout = static_cast<int>(kRequestTimeout.count());
+    EnsureCurlGlobalInit();
+    CURL* curl = curl_easy_init();
+    if (!curl)
+        return BuildHttpResponseTable(lua, false, 0, "", {}, "curl_easy_init failed");
 
-    if (headers) {
-        for (auto& [k, v] : *headers)
-            args->extraHeaders[k.as<std::string>()] = v.as<std::string>();
+    std::string responseBody;
+    ResponseHeaders responseHeaders;
+    struct curl_slist* headerList = nullptr;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    // Set unconditionally (including for GET) so one code path handles every
+    // verb without branching, mirroring the previous single-function
+    // generic-dispatch shape.
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, verb.c_str());
+
+    if (body) {
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body->data());
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body->size()));
     }
 
-    auto response = client.request(url, verb, body.value_or(std::string()), args);
+    if (headers) {
+        for (auto& [k, v] : *headers) {
+            std::string line = k.as<std::string>() + ": " + v.as<std::string>();
+            headerList = curl_slist_append(headerList, line.c_str());
+        }
+        if (headerList) curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerList);
+    }
 
-    bool ok = response->errorCode == ix::HttpErrorCode::Ok;
-    return BuildHttpResponseTable(lua, ok, response->statusCode, response->body, response->headers, response->errorMsg);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &WriteBodyCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseBody);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, &WriteHeaderCallback);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &responseHeaders);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, static_cast<long>(kRequestTimeout.count()));
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(kRequestTimeout.count()));
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
+    // Required: DoRequest always runs on a ScriptDataSource worker thread,
+    // never the main thread, and libcurl's default signal-based timeouts are
+    // documented as unsafe outside a single-threaded/main-thread caller.
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    bool ok = (res == CURLE_OK);
+    long statusCode = 0;
+    std::string errorMsg;
+    if (ok)
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &statusCode);
+    else
+        errorMsg = curl_easy_strerror(res);
+
+    if (headerList) curl_slist_free_all(headerList);
+    curl_easy_cleanup(curl);
+
+    return BuildHttpResponseTable(lua, ok, static_cast<int>(statusCode), responseBody, responseHeaders, errorMsg);
 }
 
 }  // namespace
@@ -94,11 +176,11 @@ void Register(sol::state& L)
         );
     };
 
-    bindNoBody("get", ix::HttpClient::kGet);
-    bindWithBody("post", ix::HttpClient::kPost);
-    bindWithBody("put", ix::HttpClient::kPut);
-    bindWithBody("patch", ix::HttpClient::kPatch);
-    bindNoBody("delete_", ix::HttpClient::kDelete);
+    bindNoBody("get", "GET");
+    bindWithBody("post", "POST");
+    bindWithBody("put", "PUT");
+    bindWithBody("patch", "PATCH");
+    bindNoBody("delete_", "DELETE");
 }
 
 void SetPermissionGate(PermissionGate gate)

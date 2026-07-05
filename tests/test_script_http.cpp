@@ -3,18 +3,19 @@
 //
 // Headless console test (no SDL, no rendering): exercises the `http` Lua
 // table (lua_http.h/cpp) end to end through ScriptDataSource's worker
-// thread, against a local in-process HTTP server (ix::HttpServer) so nothing
-// depends on the public internet. Covers: a successful GET, a non-2xx
-// response, a request to an unreachable host, and header round-tripping.
+// thread, against a local in-process HTTP server (cpp-httplib's Server,
+// test-only dependency) so nothing depends on the public internet. Covers:
+// a successful GET, a non-2xx response, a request to an unreachable host,
+// and header round-tripping.
 
 #include "script.h"
 #include "script_test_util.h"
 
-#include <ixwebsocket/IXGetFreePort.h>
-#include <ixwebsocket/IXHttpServer.h>
+#include <httplib.h>
 
 #include <chrono>
 #include <string>
+#include <thread>
 
 using script_test_util::Check;
 using script_test_util::g_failures;
@@ -39,53 +40,49 @@ std::vector<Record> PollForRecords(ScriptDataSource& ds)
     return result;
 }
 
-// Minimal local HTTP server (backed by IXWebSocket's own HttpServer, so no
+// Minimal local HTTP server (backed by cpp-httplib's own Server, so no
 // per-platform raw-socket code is needed here) with a few canned routes.
 struct TestHttpServer {
-    int port;
-    ix::HttpServer server;
+    httplib::Server server;
+    int port = 0;
+    std::thread thread;
 
-    TestHttpServer() : port(ix::getFreePort()), server(port, "127.0.0.1")
+    TestHttpServer()
     {
-        server.setOnConnectionCallback(
-            [](ix::HttpRequestPtr request, std::shared_ptr<ix::ConnectionState>) -> ix::HttpResponsePtr {
-                const std::string& uri = request->uri;
+        server.set_pre_routing_handler([](const httplib::Request& request, httplib::Response& response) {
+            const std::string& path = request.path;
 
-                if (uri == "/ok") {
-                    return std::make_shared<ix::HttpResponse>(
-                        200, "OK", ix::HttpErrorCode::Ok, ix::WebSocketHttpHeaders{}, std::string("hello")
-                    );
-                }
-                if (uri == "/missing") {
-                    return std::make_shared<ix::HttpResponse>(
-                        404, "Not Found", ix::HttpErrorCode::Ok, ix::WebSocketHttpHeaders{}, std::string("nope")
-                    );
-                }
-                if (uri == "/echo-headers") {
-                    std::string echoed;
-                    auto it = request->headers.find("X-Test-Header");
-                    if (it != request->headers.end()) echoed = it->second;
-
-                    ix::WebSocketHttpHeaders respHeaders;
-                    respHeaders["X-Echoed"] = echoed;
-                    return std::make_shared<ix::HttpResponse>(
-                        200, "OK", ix::HttpErrorCode::Ok, respHeaders, echoed
-                    );
-                }
-                return std::make_shared<ix::HttpResponse>(
-                    400, "Bad Request", ix::HttpErrorCode::Ok, ix::WebSocketHttpHeaders{}, std::string()
-                );
+            if (path == "/ok") {
+                response.status = 200;
+                response.set_content("hello", "text/plain");
+            } else if (path == "/missing") {
+                response.status = 404;
+                response.set_content("nope", "text/plain");
+            } else if (path == "/echo-headers") {
+                std::string echoed;
+                if (auto it = request.headers.find("X-Test-Header"); it != request.headers.end())
+                    echoed = it->second;
+                response.status = 200;
+                response.set_header("X-Echoed", echoed);
+                response.set_content(echoed, "text/plain");
+            } else {
+                response.status = 400;
             }
-        );
+            return httplib::Server::HandlerResponse::Handled;
+        });
 
-        auto result = server.listen();
-        if (!result.first) {
-            std::fprintf(stderr, "TestHttpServer failed to listen on port %d: %s\n", port, result.second.c_str());
-        }
-        server.start();
+        // Bind happens synchronously here, so the socket is already in the
+        // kernel accept backlog before listen_after_bind()'s accept loop
+        // even starts on the background thread below.
+        port = server.bind_to_any_port("127.0.0.1");
+        thread = std::thread([this] { server.listen_after_bind(); });
     }
 
-    ~TestHttpServer() { server.stop(); }
+    ~TestHttpServer()
+    {
+        server.stop();
+        if (thread.joinable()) thread.join();
+    }
 
     std::string BaseUrl() const { return "http://127.0.0.1:" + std::to_string(port); }
 };
@@ -130,8 +127,21 @@ void TestGetNon2xx(const std::string& baseUrl)
 void TestUnreachableHost()
 {
     // A port nothing is listening on: fast, deterministic connection refusal,
-    // no dependency on any real network.
-    int deadPort = ix::getFreePort();
+    // no dependency on any real network. Bind a throwaway server to learn a
+    // free port, then properly stop it so the kernel actually releases the
+    // socket — Server's destructor alone does NOT close svr_sock_ unless the
+    // listen loop was actually started (bind-then-destroy-without-listening
+    // leaves the port bound+listening forever, which turns "connection
+    // refused" into a silent hang instead).
+    int deadPort;
+    {
+        httplib::Server probe;
+        deadPort = probe.bind_to_any_port("127.0.0.1");
+        std::thread probeThread([&probe] { probe.listen_after_bind(); });
+        probe.wait_until_ready();
+        probe.stop();
+        probeThread.join();
+    }
 
     std::string script = "function _get_data()\n"
                           "  local resp = http.get(\"http://127.0.0.1:" +

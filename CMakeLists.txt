@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(BUILD_SHARED_LIBS ON)
 
 option(ENABLE_LUA_SCRIPTING "Build Lua/sol2 scripting support (ScriptDataSource)" ON)
+option(BUILD_TESTS "Build SDL3 visual test applications" OFF)
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/CPM.cmake)
 
@@ -49,64 +50,53 @@ if(ENABLE_LUA_SCRIPTING)
 
     find_package(Threads REQUIRED)
 
-    # mbedTLS: TLS backend for IXWebSocket's HttpClient, source-fetched via
-    # CPM (same pattern as lua/sol2 above) so no system SSL package is needed
-    # on any platform.
-    #
-    # BUILD_SHARED_LIBS OFF is required for the same reason as ixwebsocket's
-    # below: mbedtls's vendored 3rdparty helper libs (everest, p256-m) are
-    # plain add_library() calls with no Windows dllexport annotations, so left
-    # to inherit the project-wide `BUILD_SHARED_LIBS ON` they build as DLLs
-    # with zero exported symbols — MSVC then emits no import .lib for them,
-    # and the link against e.g. everest.lib fails with LNK1181 on Windows.
+    # OpenSSL: TLS backend for libcurl's HttpClient. System-installed on
+    # Linux/macOS; on Windows, install via vcpkg and pass
+    # -DCMAKE_TOOLCHAIN_FILE=<vcpkg-root>/scripts/buildsystems/vcpkg.cmake.
+    find_package(OpenSSL 3.0 REQUIRED)
+
+    # libcurl: production HTTP client for the Lua `http.*` table
+    # (lua_http.cpp). Source-fetched via CPM (same self-contained-static
+    # pattern this repo already uses for lua/sol2 above), statically linked,
+    # OpenSSL as TLS backend. Only HTTP(S) is needed, so the other protocols
+    # curl supports are disabled to trim build time/surface.
     CPMAddPackage(
-        NAME mbedtls
-        GITHUB_REPOSITORY Mbed-TLS/mbedtls
-        GIT_TAG v3.6.2
+        NAME curl
+        GITHUB_REPOSITORY curl/curl
+        GIT_TAG curl-8_21_0
         OPTIONS
-            "ENABLE_PROGRAMS OFF"
-            "ENABLE_TESTING OFF"
+            "CURL_USE_OPENSSL ON"
+            "CURL_USE_LIBPSL OFF"
             "BUILD_SHARED_LIBS OFF"
+            "BUILD_CURL_EXE OFF"
+            "BUILD_TESTING OFF"
+            "CURL_DISABLE_LDAP ON"
+            "CURL_DISABLE_TELNET ON"
+            "CURL_DISABLE_DICT ON"
+            "CURL_DISABLE_GOPHER ON"
+            "CURL_DISABLE_SMTP ON"
+            "CURL_DISABLE_POP3 ON"
+            "CURL_DISABLE_IMAP ON"
+            "CURL_DISABLE_FTP ON"
+            "CURL_DISABLE_TFTP ON"
+            "CURL_DISABLE_RTSP ON"
     )
 
-    # IXWebSocket: only HttpClient is used today; WebSocket support is unused
-    # but comes along for a possible future feature (see CLAUDE.md).
-    #
-    # BUILD_SHARED_LIBS is forced OFF here (scoped to this add_subdirectory
-    # call only, via CPM's OPTIONS mechanism) because it would otherwise
-    # inherit the project-wide `set(BUILD_SHARED_LIBS ON)` above and build
-    # ixwebsocket as a .so — breaking static linkage into `engine`.
-    CPMAddPackage(
-        NAME ixwebsocket
-        GITHUB_REPOSITORY machinezone/IXWebSocket
-        GIT_TAG v11.4.6
-        OPTIONS
-            "USE_TLS ON"
-            "USE_MBED_TLS ON"
-            "BUILD_SHARED_LIBS OFF"
-            "IXWEBSOCKET_INSTALL OFF"
-    )
-
-    # IXWebSocket's own CMakeLists resolves mbedTLS via `find_package(MbedTLS
-    # REQUIRED)` and its bundled CMake/FindMbedTLS.cmake module, expecting
-    # MBEDTLS_INCLUDE_DIRS/MBEDTLS_LIBRARIES to get populated by that module.
-    # Since CMake >= 3.24 transparently redirects find_package(MbedTLS) to the
-    # CPM-fetched `mbedtls` package above (bypassing the Module entirely), that
-    # find_package call succeeds without ever setting those variables, leaving
-    # `ixwebsocket` with no mbedtls include path or libraries at all. Wire them
-    # up explicitly so the target actually builds against our fetched mbedtls.
-    if (TARGET ixwebsocket)
-        target_include_directories(ixwebsocket PRIVATE ${mbedtls_SOURCE_DIR}/include)
-        target_link_libraries(ixwebsocket PRIVATE mbedtls mbedx509 mbedcrypto)
-        # mbedtls 3.x header layout; IXSocketMbedTLS.cpp guards on this macro.
-        target_compile_definitions(ixwebsocket PRIVATE IXWEBSOCKET_USE_MBED_TLS_MIN_VERSION_3)
-    endif()
-
-    foreach(pic_target ixwebsocket mbedtls mbedcrypto mbedx509 everest p256m)
-        if(TARGET ${pic_target})
-            set_target_properties(${pic_target} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    # cpp-httplib: header-only, MIT, test-only. Provides the local mock HTTP
+    # server tests/test_script_http.cpp needs — libcurl has no server-side
+    # API. Not linked into `engine`, only into that one test binary.
+    if(BUILD_TESTS)
+        CPMAddPackage(
+            NAME httplib
+            GITHUB_REPOSITORY yhirose/cpp-httplib
+            GIT_TAG v0.49.0
+            DOWNLOAD_ONLY YES
+        )
+        if(httplib_ADDED)
+            add_library(cpp_httplib INTERFACE IMPORTED)
+            target_include_directories(cpp_httplib INTERFACE ${httplib_SOURCE_DIR})
         endif()
-    endforeach()
+    endif()
 endif()
 
 CPMAddPackage(
@@ -180,8 +170,10 @@ if(ENABLE_LUA_SCRIPTING)
     target_link_libraries(engine PUBLIC
         sol2
         lua
-        ixwebsocket
         Threads::Threads
+    )
+    target_link_libraries(engine PRIVATE
+        CURL::libcurl
     )
 endif()
 
@@ -204,8 +196,6 @@ endif()
 
 # ── Test applications (SDL3) ──────────────────────────────────────────────────
 
-option(BUILD_TESTS "Build SDL3 visual test applications" OFF)
-
 if(BUILD_TESTS)
     pkg_check_modules(SDL3 REQUIRED IMPORTED_TARGET sdl3)
 
@@ -225,5 +215,6 @@ if(BUILD_TESTS)
     if(ENABLE_LUA_SCRIPTING)
         add_engine_test(test_script_trigger)
         add_engine_test(test_script_http)
+        target_link_libraries(test_script_http PRIVATE cpp_httplib)
     endif()
 endif()

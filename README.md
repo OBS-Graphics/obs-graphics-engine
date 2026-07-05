@@ -10,15 +10,18 @@ Cairo/Pango rendering engine for animated broadcast graphics. A static C++20 lib
 |---|---|---|
 | Cairo + Pango | `libcairo2-dev libpango1.0-dev` | `cairo-devel pango-devel` |
 | minizip | `libminizip-dev` | `minizip-devel` |
+| OpenSSL ≥ 3.0 *(only if `ENABLE_LUA_SCRIPTING`)* | `libssl-dev` | `openssl-devel` |
 | CMake ≥ 3.16 | `cmake` | `cmake` |
 
 ```bash
 # Ubuntu / Debian
-sudo apt-get install libcairo2-dev libpango1.0-dev libminizip-dev cmake
+sudo apt-get install libcairo2-dev libpango1.0-dev libminizip-dev libssl-dev cmake
 
 # Fedora
-sudo dnf install cairo-devel pango-devel minizip-devel cmake
+sudo dnf install cairo-devel pango-devel minizip-devel openssl-devel cmake
 ```
+
+On Windows, install OpenSSL via [vcpkg](https://github.com/microsoft/vcpkg) (`vcpkg install openssl`) and configure with `-DCMAKE_TOOLCHAIN_FILE=<vcpkg-root>/scripts/buildsystems/vcpkg.cmake`.
 
 ### Fetched automatically by CPM at configure time
 
@@ -26,11 +29,13 @@ sudo dnf install cairo-devel pango-devel minizip-devel cmake
 |---|---|---|
 | [lua](https://github.com/lua/lua) | 5.4.6 | Scripting runtime |
 | [sol2](https://github.com/ThePhD/sol2) | v3.5.0 | C++ Lua bindings |
+| [curl/curl](https://github.com/curl/curl) | curl-8_21_0 | HTTP(S) client backing the Lua `http.*` table (statically linked, OpenSSL backend) |
+| [yhirose/cpp-httplib](https://github.com/yhirose/cpp-httplib) | v0.49.0 | Local mock HTTP server, **test-only** (not linked into `engine`) |
 | [nlohmann/json](https://github.com/nlohmann/json) | v3.12.0 | JSON parsing/serialization |
 | [nothings/stb](https://github.com/nothings/stb) | master | Image loading (stb_image) |
 | [yhirose/cpp-zipper](https://github.com/yhirose/cpp-zipper) | master | ZIP I/O for `.ogt` files (wraps system minizip) |
 
-No manual setup needed — CPM downloads and configures all of these on first configure.
+No manual setup needed — CPM downloads and configures all of these on first configure. `curl` and `cpp-httplib` are only fetched when `ENABLE_LUA_SCRIPTING` is on (the latter additionally requires `BUILD_TESTS`).
 
 ## Building standalone
 
