@@ -81,6 +81,9 @@ if(ENABLE_LUA_SCRIPTING)
             "CURL_DISABLE_TFTP ON"
             "CURL_DISABLE_RTSP ON"
     )
+    if(TARGET libcurl_static)
+        set_target_properties(libcurl_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    endif()
 
     # cpp-httplib: header-only, MIT, test-only. Provides the local mock HTTP
     # server tests/test_script_http.cpp needs — libcurl has no server-side
