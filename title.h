@@ -64,3 +64,12 @@ private:
     std::string m_tempAssetDir;
     std::vector<uint8_t> m_thumbnail;
 };
+
+namespace ogt {
+// Canonical single-element (de)serializers for the .ogt element schema.
+// Consumers (e.g. the editor's clipboard/undo snapshots) should use these
+// rather than duplicating the logic. SerializeElement here keeps raw asset
+// paths (no @-bundling); archive bundling stays internal to Title::Save.
+std::unique_ptr<VisualElement> ParseElement(const nlohmann::json& j);
+nlohmann::json SerializeElement(const IElement* el, const IElement* root);
+}

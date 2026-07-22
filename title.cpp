@@ -23,6 +23,8 @@
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 
+static constexpr int kOgtSchemaVersion = 1;
+
 // ── Constructor / Destructor ──────────────────────────────────────────────────
 
 Title::Title()
@@ -730,6 +732,15 @@ static json SerializeElement(const IElement* iel, const IElement* root, const As
     return j;
 }
 
+namespace ogt {
+std::unique_ptr<VisualElement> ParseElement(const nlohmann::json& j) {
+    return ::ParseElement(j);
+}
+nlohmann::json SerializeElement(const IElement* el, const IElement* root) {
+    return ::SerializeElement(el, root, [](const std::string& p) { return p; });
+}
+}
+
 // ── Load ──────────────────────────────────────────────────────────────────────
 
 // Replace '@name' strings in JSON with their resolved temp-dir paths
@@ -787,6 +798,14 @@ Title Title::Load(const std::string& ogtPath)
     json j = json::parse(jsonStr);
     if (!pathMap.empty()) ReplaceAtPaths(j, pathMap);
 
+    int fileVersion = j.value("version", 0);
+    if (fileVersion > kOgtSchemaVersion) {
+        fprintf(stderr,
+                "[ogt] warning: title '%s' uses schema version %d, newer than supported %d; "
+                "some features may not load.\n",
+                j.value("id", "").c_str(), fileVersion, kOgtSchemaVersion);
+    }
+
     Title title;
     title.id       = j.value("id", "");
     title.width    = j.value("width", 1920);
@@ -841,8 +860,13 @@ Title Title::Load(const std::string& ogtPath)
 
 void Title::Save(const std::string& ogtPath) const
 {
-    // Track assets to bundle: resolved local path → "@basename"
+    // Track assets to bundle: resolved local path → "@basename" (bundled name)
     std::unordered_map<std::string, std::string> assetMap;
+    // resolvedPath → assigned "@name" (for stability across repeated registrations
+    // of the same path), and the set of base names already claimed (to disambiguate
+    // collisions between distinct paths that share a filename).
+    std::unordered_map<std::string, std::string> pathToAt;
+    std::unordered_set<std::string> usedNames;
 
     auto registerAsset = [&](const std::string& path) -> std::string {
         if (path.empty()) return path;
@@ -858,16 +882,35 @@ void Title::Save(const std::string& ogtPath) const
             baseName     = fs::path(path).filename().string();
         }
 
-        std::string atName = "@" + baseName;
+        auto existing = pathToAt.find(resolvedPath);
+        if (existing != pathToAt.end())
+            return existing->second;
+
+        std::string uniqueName = baseName;
+        if (usedNames.count(uniqueName)) {
+            fs::path p(baseName);
+            std::string stem = p.stem().string();
+            std::string ext  = p.extension().string();
+            int counter = 1;
+            do {
+                uniqueName = stem + "_" + std::to_string(counter) + ext;
+                ++counter;
+            } while (usedNames.count(uniqueName));
+        }
+
+        usedNames.insert(uniqueName);
+        std::string atName = "@" + uniqueName;
+        pathToAt.emplace(resolvedPath, atName);
         assetMap.emplace(resolvedPath, atName);
         return atName;
     };
 
     // Build title.json
     json j;
-    j["id"]     = id;
-    j["width"]  = width;
-    j["height"] = height;
+    j["id"]      = id;
+    j["version"] = kOgtSchemaVersion;
+    j["width"]   = width;
+    j["height"]  = height;
     if (!metadata.empty()) j["metadata"] = metadata;
 
     IElement* root = GetRoot();
@@ -875,6 +918,23 @@ void Title::Save(const std::string& ogtPath) const
     for (size_t i = 1; i < elements.size(); ++i)
         elems.push_back(SerializeElement(elements[i].get(), root, registerAsset));
     j["elements"] = elems;
+
+    // Verify all referenced assets are readable before touching disk, so a
+    // missing/unreadable asset never results in a broken .ogt with a title.json
+    // that references an asset the archive doesn't contain.
+    std::vector<std::string> missing;
+    for (const auto& [resolvedPath, atName] : assetMap) {
+        std::ifstream f(resolvedPath, std::ios::binary);
+        if (!f) missing.push_back(resolvedPath);
+    }
+    if (!missing.empty()) {
+        std::string msg = "Title::Save: cannot bundle missing asset(s): ";
+        for (size_t i = 0; i < missing.size(); ++i) {
+            if (i) msg += ", ";
+            msg += missing[i];
+        }
+        throw std::runtime_error(msg);
+    }
 
     zipper::Zip zip(ogtPath);
     zip.add_file("title.json", j.dump(2));
