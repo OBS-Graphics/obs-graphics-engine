@@ -7,9 +7,18 @@
 #include "spatial.h"
 #include "types.hpp"
 
+#include <nlohmann/json.hpp>
+
 class VisualElement : public Spatial {
 public:
     int zOrder{0};
+
+    // Element-level JSON keys the parser doesn't recognize (e.g. fields
+    // written by a newer plugin/editor). Captured on parse, merged back in
+    // (without overwriting known fields) on serialize, so a Load->Save
+    // round-trip never silently drops forward-compat data. See
+    // ParseElement/SerializeElement in title.cpp.
+    nlohmann::json extra = nlohmann::json::object();
 
     AnimationDef inAnimation{}, outAnimation{};
     AnimationDef dataInAnimation{}, dataOutAnimation{};

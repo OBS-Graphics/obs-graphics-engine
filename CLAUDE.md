@@ -144,6 +144,56 @@ The root element (`"__root"`) is **not** serialized. Elements without a `parent`
 | `data_anim_in` / `data_anim_out` | object | Data-change animation (same structure as anim_in/out) |
 | `metadata` *(title-level)* | object | Arbitrary key-value store for editor/consumer settings; omitted when empty |
 
+## Schema versioning & forward compatibility
+
+`.ogt` files carry a schema version so a plugin/editor can safely open a file written
+by a *different* version of the engine. The policy lives in `title.cpp`.
+
+**Version constants** — `kOgtSchemaMajor` / `kOgtSchemaMinor` (currently **1.0**).
+- `Save` writes `"schema_version": { "major": M, "minor": m }` and also a legacy
+  `"version": M` int for readers that predate the major/minor split.
+- `Load` reads `schema_version` when present, else falls back to the legacy `version`
+  int (via migration, below), else treats the file as the current version.
+
+**Bump policy**
+- **Minor bump** — additive, backward-compatible change: a new optional field with a
+  safe default, a new element type an older reader can skip. Older engines still load
+  the file; they just don't understand the new field (but *preserve* it — see below).
+- **Major bump** — a breaking change: a field's meaning/shape changes, a required field
+  is added, or old readers would mis-render. Older engines flag the file as newer-major.
+
+**Unknown-field preservation (the core forward-compat guarantee)** — the engine no
+longer discards JSON keys it doesn't recognize. Unknown keys on an element are captured
+into `VisualElement::extra` and unknown top-level keys into `Title::extra`, then merged
+back on `Save` (typed/known keys win over `extra`). This means an *older* editor can open,
+edit, and re-save a file written by a *newer* plugin **without stripping** the newer
+plugin's fields. This is what makes minor-version cross-compatibility real rather than
+nominal.
+
+**Read policy** — `ClassifySchema(fileMajor, fileMinor)` returns a `SchemaCompat`:
+| Result | Condition | Behavior |
+|---|---|---|
+| `Ok` | same major, same/older minor | load normally |
+| `OlderMigrate` | older file | run migration, then load |
+| `NewerMinor` | same major, newer minor | load; unknown fields preserved; **info** diagnostic |
+| `NewerMajor` | newer major | load-degraded (not rejected): unknown fields preserved, new features ignored; **warning** diagnostic |
+
+Newer-major is intentionally **load-degraded, not reject** — combined with unknown-field
+preservation, an older editor opening a far-newer file still shows what it can and
+round-trips the rest untouched.
+
+**Migration hooks** — `MigrateTitleJson(json&, fromMajor, fromMinor)` runs in `Load`
+between parse and field extraction, driven by an ordered migration registry (each step
+transforms the JSON in place from one version to the next). The only current step is the
+`{0,0}` legacy/absent-version normalization → current shape. To add a migration: append a
+step keyed by the source version that walks the JSON (recursing into `elements` and their
+children for element-field changes) and rewrites it to the next version's shape.
+
+**Load diagnostic** — instead of printing to `stderr`, `Load` records a
+`Title::LoadDiagnostic { Severity{None,Info,Warning}, message }`, readable via
+`Title::GetLoadDiagnostic()`. The editor surfaces it as a non-blocking notice when a file
+was created with a newer schema version.
+
 ## Lua scripting (`ScriptDataSource`)
 
 Built only when the CMake option `ENABLE_LUA_SCRIPTING` (default `ON`) is enabled; when disabled, `script.h/cpp` are excluded from the `engine` target and Lua/sol2 are never fetched. `engine` publicly defines `ENGINE_HAS_LUA_SCRIPTING` only when the feature is built, so a consumer can guard any conditional `#include "engine/script.h"` with `#ifdef ENGINE_HAS_LUA_SCRIPTING`.

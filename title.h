@@ -15,9 +15,23 @@
 enum class TitleState { Hidden, AnimatingIn, Visible, AnimatingOut };
 
 struct Title {
+    // Diagnostic produced by Load() describing schema-version compatibility
+    // of the loaded file (if any concern). Reset at the start of every
+    // Load(); see GetLoadDiagnostic().
+    struct LoadDiagnostic {
+        enum class Severity { None, Info, Warning };
+        Severity severity = Severity::None;
+        std::string message;  // human-readable, empty when severity == None
+    };
+
     std::string id;
     int width{1920}, height{1080};
     nlohmann::json metadata;  // arbitrary editor/consumer data, preserved round-trip
+    // Top-level title.json keys the loader doesn't recognize (forward-compat
+    // for a newer plugin's fields). Captured on Load, merged back in
+    // (without overwriting known fields) on Save. Does not include
+    // `metadata`, which already round-trips in full via the field above.
+    nlohmann::json extra = nlohmann::json::object();
     std::vector<std::unique_ptr<IElement>> elements;  // [0] is always the auto-created root
     TitleState state{TitleState::Hidden};
     double timer{0.0};
@@ -57,12 +71,15 @@ struct Title {
     void SetThumbnail(std::vector<uint8_t> pngBytes) { m_thumbnail = std::move(pngBytes); }
     const std::vector<uint8_t>& GetThumbnail() const { return m_thumbnail; }
 
+    const LoadDiagnostic& GetLoadDiagnostic() const { return m_loadDiagnostic; }
+
 private:
     void RenderElements(cairo_t* ctx) const;
 
     double updateTimer{0.0}, prevUpdateTimer{0.0};
     std::string m_tempAssetDir;
     std::vector<uint8_t> m_thumbnail;
+    LoadDiagnostic m_loadDiagnostic;
 };
 
 namespace ogt {

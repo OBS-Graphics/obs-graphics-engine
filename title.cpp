@@ -17,13 +17,40 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 #include <zipper.h>
 
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 
-static constexpr int kOgtSchemaVersion = 1;
+static constexpr int kOgtSchemaMajor = 1;
+static constexpr int kOgtSchemaMinor = 0;
+
+// Read-compatibility classification for a file's (major, minor) schema
+// version against the schema this build writes/understands.
+enum class SchemaCompat {
+    Ok,           // file schema <= what we support: load normally.
+    OlderMigrate, // file major < ours: content migrations may be needed.
+    NewerMinor,   // same major, file minor is ahead: unknown fields are
+                  // preserved (see kKnownTitleKeys/title.extra), so this is
+                  // safe to load as-is.
+    NewerMajor,   // file major is ahead: fields may have been repurposed or
+                  // removed, not just added. Loaded best-effort/degraded.
+};
+
+// Not `static`: kept internal (no title.h declaration, not part of the
+// public API) but with external linkage so a standalone test binary can
+// forward-declare and link against it directly.
+SchemaCompat ClassifySchema(int fileMajor, int fileMinor)
+{
+    if (fileMajor < kOgtSchemaMajor) return SchemaCompat::OlderMigrate;
+    if (fileMajor == kOgtSchemaMajor) {
+        return (fileMinor <= kOgtSchemaMinor) ? SchemaCompat::Ok
+                                               : SchemaCompat::NewerMinor;
+    }
+    return SchemaCompat::NewerMajor;
+}
 
 // ── Constructor / Destructor ──────────────────────────────────────────────────
 
@@ -372,6 +399,32 @@ static Paint ParsePaint(const json& v)
     return Paint{};
 }
 
+// Element JSON keys consumed below (common to every element type). Keep in
+// sync with ParseCommonProperties. Does NOT include "type" or "parent" —
+// those are consumed one level up (ParseElement / Title::Load) — nor any
+// type-specific keys, which each ParseElement branch tracks separately.
+static const std::unordered_set<std::string> kCommonElementKeys = {
+    "id", "x", "y", "w", "h", "fill", "stroke", "color", "corner_radius",
+    "z_order", "stroke_width", "opacity", "rotation", "shear_x", "shear_y",
+    "shadow", "anim_in", "anim_out", "data_anim_in", "data_anim_out",
+    "clip_children", "fit_to_children", "children_padding",
+};
+
+// Copies every key in `j` that isn't a recognized common/type-specific/
+// structural key into el.extra, so it survives a Load->Save round-trip even
+// though nothing in the engine currently reads it. `typeKeys` is the set of
+// keys the calling ParseElement branch consumes beyond the common ones.
+static void CaptureExtraElementKeys(VisualElement& el, const json& j,
+                                     const std::unordered_set<std::string>& typeKeys)
+{
+    for (const auto& [k, v] : j.items()) {
+        if (k == "type" || k == "parent") continue;
+        if (kCommonElementKeys.count(k)) continue;
+        if (typeKeys.count(k)) continue;
+        el.extra[k] = v;
+    }
+}
+
 static void ParseCommonProperties(VisualElement& el, const json& j)
 {
     el.SetId(j.value("id", ""));
@@ -426,6 +479,12 @@ static std::unique_ptr<VisualElement> ParseElement(const json& j)
     std::string t = j.value("type", "");
 
     if (t == "text") {
+        static const std::unordered_set<std::string> kTextKeys = {
+            "text", "font_family", "font_size", "font_italic", "font_underline",
+            "font_strikethrough", "font_weight", "auto_scale", "text_align_x",
+            "text_align_y", "ellipsize", "wrap", "text_transform",
+            "line_spacing", "letter_spacing",
+        };
         auto el = std::make_unique<TextElement>();
         el->text                  = j.value("text", "");
         el->font.family           = j.value("font_family", "Sans");
@@ -443,27 +502,35 @@ static std::unique_ptr<VisualElement> ParseElement(const json& j)
         el->textStyle.lineSpacing   = j.value("line_spacing", 0.0f);
         el->textStyle.letterSpacing = j.value("letter_spacing", 0.0f);
         ParseCommonProperties(*el, j);
+        CaptureExtraElementKeys(*el, j, kTextKeys);
         return el;
     }
 
     if (t == "image") {
+        static const std::unordered_set<std::string> kImageKeys = {
+            "image_path", "scale_mode", "image_tile_scale",
+        };
         auto el = std::make_unique<ImageElement>();
         el->imagePath      = j.value("image_path", "");
         el->imageScaleMode = ParseScaleMode(j.value("scale_mode", "stretch"));
         el->imageTileScale = j.value("image_tile_scale", 1.0);
         ParseCommonProperties(*el, j);
+        CaptureExtraElementKeys(*el, j, kImageKeys);
         return el;
     }
 
     if (t == "qr_code") {
+        static const std::unordered_set<std::string> kQrKeys = {"text"};
         auto el = std::make_unique<QrElement>();
         el->text = j.value("text", "");
         ParseCommonProperties(*el, j);
+        CaptureExtraElementKeys(*el, j, kQrKeys);
         return el;
     }
 
     auto el = std::make_unique<RectangleElement>();
     ParseCommonProperties(*el, j);
+    CaptureExtraElementKeys(*el, j, {});
     return el;
 }
 
@@ -729,6 +796,12 @@ static json SerializeElement(const IElement* iel, const IElement* root, const As
         j["type"] = "rectangle";
     }
 
+    // Merge back any keys the parser didn't recognize on load (forward-compat
+    // for a newer plugin's fields). Known/typed keys always win.
+    for (const auto& [k, v] : el->extra.items()) {
+        if (!j.contains(k)) j[k] = v;
+    }
+
     return j;
 }
 
@@ -739,6 +812,85 @@ std::unique_ptr<VisualElement> ParseElement(const nlohmann::json& j) {
 nlohmann::json SerializeElement(const IElement* el, const IElement* root) {
     return ::SerializeElement(el, root, [](const std::string& p) { return p; });
 }
+}
+
+// ── Schema migrations ────────────────────────────────────────────────────────
+//
+// Ordered registry of migration steps applied to a title.json's in-memory
+// `json` value right after parsing/version-resolution and before any field
+// extraction. Each step names the schema version it upgrades *from* and a
+// callback that mutates `j` in place so it looks like a file written at the
+// next schema version.
+//
+// NOTE: as of schema 1.0 there have been NO breaking/renaming field
+// changes. Schema 1.0 only *added* the "schema_version" (and legacy
+// "version") field on top of the unversioned pre-E4 (0,0) baseline; every
+// title/element field has always been purely additive, and absent fields
+// already degrade safely via `j.value(key, default)` at the call sites
+// below. So the step below is a deliberate, documented no-op — it exists to
+// pin down the call site, ordering, and extension pattern for the day a
+// real migration (a field rename/restructure/removal) is actually needed.
+// Do NOT use this scaffold to drop or alter real field data.
+struct SchemaMigrationStep {
+    int major;
+    int minor;
+    std::function<void(json&)> apply;
+};
+
+static const std::vector<SchemaMigrationStep>& MigrationRegistry()
+{
+    static const std::vector<SchemaMigrationStep> steps = {
+        // (0,0) -> (1,0): pre-E4 / legacy unversioned files. Nothing to
+        // transform — schema 1.0 is additive-only relative to (0,0).
+        {0, 0, [](json& /*j*/) {
+            // Intentional no-op: no field was renamed/removed going into
+            // schema 1.0, so there is nothing to migrate here today.
+        }},
+        // Extension point: when a future schema bump introduces a real
+        // breaking change, add a new ordered step here. `j` is the WHOLE
+        // title.json object, so a step operates on top-level title keys
+        // and/or walks j["elements"] (recursing into nested children) for
+        // element-field changes — the far more common case. e.g. renaming
+        // the per-element "stroke_width" number into a nested
+        // "stroke": {"width": ...} object:
+        //
+        // {1, 0, [](json& j) {
+        //     if (!j.contains("elements") || !j["elements"].is_array()) return;
+        //     std::function<void(json&)> fix = [&](json& el) {
+        //         if (el.contains("stroke_width")) {
+        //             el["stroke"]["width"] = el["stroke_width"];
+        //             el.erase("stroke_width");
+        //         }
+        //         if (el.contains("children") && el["children"].is_array())
+        //             for (auto& c : el["children"]) fix(c);
+        //     };
+        //     for (auto& el : j["elements"]) fix(el);
+        // }},
+    };
+    return steps;
+}
+
+static bool SchemaVersionLess(int aMajor, int aMinor, int bMajor, int bMinor)
+{
+    return std::make_pair(aMajor, aMinor) < std::make_pair(bMajor, bMinor);
+}
+
+// Not `static`: kept internal (no title.h declaration, not part of the
+// public API) but with external linkage so a standalone test binary can
+// forward-declare and link against it directly, mirroring ClassifySchema
+// above. Applies every registered step whose source version is >= the
+// file's resolved (fromMajor, fromMinor) and < the schema this build
+// understands (kOgtSchemaMajor.kOgtSchemaMinor), in registration order.
+void MigrateTitleJson(nlohmann::json& j, int fromMajor, int fromMinor)
+{
+    for (const auto& step : MigrationRegistry()) {
+        const bool stepAtOrAfterFile =
+            !SchemaVersionLess(step.major, step.minor, fromMajor, fromMinor);
+        const bool stepBeforeCurrent =
+            SchemaVersionLess(step.major, step.minor, kOgtSchemaMajor, kOgtSchemaMinor);
+        if (stepAtOrAfterFile && stepBeforeCurrent)
+            step.apply(j);
+    }
 }
 
 // ── Load ──────────────────────────────────────────────────────────────────────
@@ -798,21 +950,91 @@ Title Title::Load(const std::string& ogtPath)
     json j = json::parse(jsonStr);
     if (!pathMap.empty()) ReplaceAtPaths(j, pathMap);
 
-    int fileVersion = j.value("version", 0);
-    if (fileVersion > kOgtSchemaVersion) {
-        fprintf(stderr,
-                "[ogt] warning: title '%s' uses schema version %d, newer than supported %d; "
-                "some features may not load.\n",
-                j.value("id", "").c_str(), fileVersion, kOgtSchemaVersion);
+    // Resolve the file's (major, minor) schema version. Prefer the new
+    // structured "schema_version" object; fall back to the legacy int
+    // "version" field; default to {0, 0} (pre-E4 / absent) otherwise.
+    //
+    // Guard every read with an explicit type check rather than relying on
+    // json::value()'s default: value() only substitutes the default when
+    // the key is *absent*, but still throws type_error.302 if the key is
+    // *present with the wrong type* (e.g. a hand-edited/corrupt file with
+    // "major": "1"). A malformed version node must degrade to the
+    // default, not throw.
+    int fileMajor = 0;
+    int fileMinor = 0;
+    if (j.contains("schema_version") && j["schema_version"].is_object()) {
+        const json& sv = j["schema_version"];
+        if (sv.contains("major") && sv["major"].is_number_integer())
+            fileMajor = sv["major"].get<int>();
+        if (sv.contains("minor") && sv["minor"].is_number_integer())
+            fileMinor = sv["minor"].get<int>();
+    } else if (j.contains("version") && j["version"].is_number_integer()) {
+        fileMajor = j.value("version", 0);
+        fileMinor = 0;
+    }
+
+    // Run schema migrations now that (fileMajor, fileMinor) is resolved and
+    // before any field extraction below consumes `j`. See MigrationRegistry
+    // above for the (currently no-op) step list and extension pattern.
+    MigrateTitleJson(j, fileMajor, fileMinor);
+
+    // Structured diagnostic for the caller (e.g. editor UI), replacing the
+    // old stderr-only warning. Populated here, applied to `title` below once
+    // it's constructed.
+    Title::LoadDiagnostic diag;
+    switch (ClassifySchema(fileMajor, fileMinor)) {
+        case SchemaCompat::Ok:
+            // Current or older-minor within the same major: load silently.
+            break;
+        case SchemaCompat::OlderMigrate:
+            // Older major. No migrations implemented yet (see TODO above);
+            // load as-is for now. A successful migrate is not a user-facing
+            // warning.
+            break;
+        case SchemaCompat::NewerMinor:
+            diag.severity = Title::LoadDiagnostic::Severity::Info;
+            diag.message =
+                "This file was created with a newer minor version of the schema (file " +
+                std::to_string(fileMajor) + "." + std::to_string(fileMinor) + ", editor " +
+                std::to_string(kOgtSchemaMajor) + "." + std::to_string(kOgtSchemaMinor) +
+                "). Unknown fields are preserved on save.";
+            break;
+        case SchemaCompat::NewerMajor:
+            // Major version ahead of what we support: fields may have been
+            // repurposed or removed, not just added on top. We still load
+            // (best-effort/degraded) rather than reject outright, because
+            // unknown-key preservation (title.extra) means we don't lose
+            // data on round-trip. A future major bump MAY choose to
+            // hard-reject here instead if degraded loads prove unsafe.
+            diag.severity = Title::LoadDiagnostic::Severity::Warning;
+            diag.message =
+                "This file was created with a newer major version of the schema (file " +
+                std::to_string(fileMajor) + "." + std::to_string(fileMinor) + ", editor " +
+                std::to_string(kOgtSchemaMajor) + "." + std::to_string(kOgtSchemaMinor) +
+                "). It may not display correctly; unknown fields are preserved but new features "
+                "are ignored.";
+            break;
     }
 
     Title title;
+    title.m_loadDiagnostic = diag;
     title.id       = j.value("id", "");
     title.width    = j.value("width", 1920);
     title.height   = j.value("height", 1080);
     title.metadata = j.value("metadata", nlohmann::json::object());
     title.m_tempAssetDir = tempDir;
     title.m_thumbnail    = std::move(thumbnail);
+
+    // Top-level title.json keys consumed above (+ "elements", parsed below).
+    // Keep in sync with the reads above. Anything else — e.g. a newer
+    // plugin's field — is preserved in title.extra for round-tripping.
+    static const std::unordered_set<std::string> kKnownTitleKeys = {
+        "id", "version", "schema_version", "width", "height", "metadata", "elements",
+    };
+    for (const auto& [k, v] : j.items()) {
+        if (!kKnownTitleKeys.count(k))
+            title.extra[k] = v;
+    }
 
     // Parse elements
     struct PendingRef { size_t idx; std::string parentId; };
@@ -907,11 +1129,21 @@ void Title::Save(const std::string& ogtPath) const
 
     // Build title.json
     json j;
-    j["id"]      = id;
-    j["version"] = kOgtSchemaVersion;
+    j["id"] = id;
+    // Dual-write the schema version: "schema_version" (major/minor object) is
+    // preferred by new readers, while "version" (legacy major-only int) keeps
+    // older E4-era readers, which only know that field, working.
+    j["schema_version"] = { {"major", kOgtSchemaMajor}, {"minor", kOgtSchemaMinor} };
+    j["version"] = kOgtSchemaMajor;
     j["width"]   = width;
     j["height"]  = height;
     if (!metadata.empty()) j["metadata"] = metadata;
+
+    // Merge back any top-level keys the loader didn't recognize (forward-compat
+    // for a newer plugin's fields). Known keys always win.
+    for (const auto& [k, v] : extra.items()) {
+        if (!j.contains(k)) j[k] = v;
+    }
 
     IElement* root = GetRoot();
     json elems = json::array();
