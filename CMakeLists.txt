@@ -236,6 +236,10 @@ if(BUILD_TESTS)
     add_engine_test(test_slide)
     add_engine_test(test_wipe_shear)
     add_engine_test(test_data_anim)
+    # Headless, no Lua required (fake IDataSource implementations stand in
+    # for a slow/throwing/scripted source) -- built and run regardless of
+    # ENABLE_LUA_SCRIPTING.
+    add_engine_test(test_data_pool)
     if(ENABLE_LUA_SCRIPTING)
         add_engine_test(test_script_trigger)
         add_engine_test(test_script_data_parse)
@@ -252,6 +256,7 @@ if(BUILD_TESTS)
     # returns 0 on success / 1 with a "FAILED" message on failure, so ctest's
     # pass/fail detection needs nothing beyond the exit code.
     enable_testing()
+    add_test(NAME test_data_pool COMMAND test_data_pool)
     if(ENABLE_LUA_SCRIPTING)
         add_test(NAME test_script_trigger COMMAND test_script_trigger)
         add_test(NAME test_script_data_parse COMMAND test_script_data_parse)

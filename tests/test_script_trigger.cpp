@@ -452,6 +452,10 @@ int main()
         CountingDataSource* counter = counterOwned.get();
         DataPool pool;
         pool.Add("d", std::move(counterOwned));
+        // Add() primes the cache with one synchronous GetData() call so a
+        // host that immediately calls Data(key) doesn't see {} until some
+        // bound Title goes Visible -- see data-pool.h's Add() doc comment.
+        Check(counter->calls == 1, "ScenarioD: Add() primed the cache with one fetch");
         Title title;
         pool.Bind(&title, "d", "d");
 
@@ -464,13 +468,13 @@ int main()
             title.Tick(dt);
             pool.Tick(dt);
         }  // still Hidden and never triggered
-        Check(counter->calls == 0, "ScenarioD: no polling while Hidden and never triggered");
+        Check(counter->calls == 1, "ScenarioD: no additional polling while Hidden and never triggered");
 
         // Instant update while Hidden is now the caller's job: fetch once via
         // DataBlocking (which, for a synchronous source, just calls GetData())
         // and hand it to TriggerIn.
         auto records = pool.DataBlocking("d");
-        Check(counter->calls == 1, "ScenarioD: DataBlocking() while Hidden does one instant fetch");
+        Check(counter->calls == 2, "ScenarioD: DataBlocking() while Hidden does one instant fetch");
         title.TriggerIn(0, -1.0, records);
 
         float t = 0.0f;
@@ -480,7 +484,7 @@ int main()
             t += dt;
         }
         Check(title.state == TitleState::Visible, "ScenarioD: reached Visible");
-        Check(counter->calls == 1, "ScenarioD: no polling during AnimatingIn");
+        Check(counter->calls == 2, "ScenarioD: no polling during AnimatingIn");
 
         t = 0.0f;
         while (t < 0.30f) {  // more than one 0.25s poll slot
@@ -488,7 +492,7 @@ int main()
             pool.Tick(dt);
             t += dt;
         }
-        Check(counter->calls == 2, "ScenarioD: exactly one periodic poll after 0.25s Visible");
+        Check(counter->calls == 3, "ScenarioD: exactly one periodic poll after 0.25s Visible");
 
         title.TriggerOut();
         t = 0.0f;
@@ -497,7 +501,7 @@ int main()
             pool.Tick(dt);
             t += dt;
         }
-        Check(counter->calls == 2, "ScenarioD: no further polling once no longer Visible");
+        Check(counter->calls == 3, "ScenarioD: no further polling once no longer Visible");
     }
 
     ScenarioG();
