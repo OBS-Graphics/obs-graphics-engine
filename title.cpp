@@ -80,10 +80,12 @@ VisualElement& Title::GetById(const std::string& id)
     throw std::runtime_error("Element with id '" + id + "' not found");
 }
 
-void Title::TriggerIn(size_t recordIndex, double duration)
+void Title::TriggerIn(size_t recordIndex, double duration, const std::vector<Record>& records)
 {
     dataRecordIndex = recordIndex;
-    UpdateData();
+    if (!records.empty())
+        UpdateData(records, /*instant=*/true);
+
     state = TitleState::AnimatingIn;
     timer = 0.0;
     this->duration = duration;
@@ -101,20 +103,11 @@ void Title::TriggerOut()
         if (cb) cb();
 }
 
-void Title::UpdateData()
+void Title::UpdateData(const std::vector<Record>& records, bool instant)
 {
-    if (!dataSource) return;
-    dataSource->SetOwner(this);
+    if (records.empty()) return;
 
-    bool instant = (state == TitleState::Hidden);
-
-    // Instant apply (Hidden -> triggered) must wait for real, fresh data
-    // before the title animates in; the periodic Visible-state poll must
-    // never block the caller. See IDataSource::GetDataBlocking().
-    auto data = instant ? dataSource->GetDataBlocking() : dataSource->GetData();
-    if (data.empty()) return;
-
-    const auto& record = data[dataRecordIndex % data.size()];
+    const auto& record = records[dataRecordIndex % records.size()];
     for (auto&& [key, value] : record) {
         try {
             auto& el = GetById(key);
@@ -130,24 +123,7 @@ void Title::UpdateData()
 
 void Title::Tick(float dt)
 {
-    // Runs every tick regardless of state (including Hidden, which nothing
-    // else here polls) so a script's own trigger_in()/trigger_out() call is
-    // guaranteed to eventually take effect, not just when something else
-    // happens to call UpdateData()/GetData() first. No-op for data sources
-    // with nothing to pump (see IDataSource::PumpEvents).
-    if (dataSource)
-        dataSource->PumpEvents();
-
     if (state == TitleState::Visible) {
-        updateTimer += dt;
-
-        const double updateInterval = 0.25;
-        int prevSlot = static_cast<int>(prevUpdateTimer / updateInterval);
-        int currSlot = static_cast<int>(updateTimer / updateInterval);
-        if (prevSlot != currSlot)
-            UpdateData();
-        prevUpdateTimer = updateTimer;
-
         for (size_t i = 1; i < elements.size(); ++i)
             static_cast<VisualElement*>(elements[i].get())->TickData(dt);
 

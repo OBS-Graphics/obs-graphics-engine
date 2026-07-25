@@ -158,6 +158,7 @@ set(engine_sources
     animation.cpp
     title.cpp
     data-source.cpp
+    data-pool.cpp
     qr.cpp
     stb.cpp
 )
@@ -240,5 +241,20 @@ if(BUILD_TESTS)
         add_engine_test(test_script_data_parse)
         add_engine_test(test_script_http)
         target_link_libraries(test_script_http PRIVATE cpp_httplib)
+    endif()
+
+    # ── ctest registration ────────────────────────────────────────────────────
+    # Only the headless console tests (no SDL window, no display needed) are
+    # registered with ctest: test_shadow_shear/test_mask/test_animation/
+    # test_slide/test_wipe_shear/test_data_anim open a real SDL3 window and are
+    # meant for manual visual inspection (see each file's own "Visual test"
+    # header comment), not unattended CI. Each headless binary's main() already
+    # returns 0 on success / 1 with a "FAILED" message on failure, so ctest's
+    # pass/fail detection needs nothing beyond the exit code.
+    enable_testing()
+    if(ENABLE_LUA_SCRIPTING)
+        add_test(NAME test_script_trigger COMMAND test_script_trigger)
+        add_test(NAME test_script_data_parse COMMAND test_script_data_parse)
+        add_test(NAME test_script_http COMMAND test_script_http)
     endif()
 endif()

@@ -10,7 +10,6 @@
 #include "lua_http.h"
 #include "lua_json.h"
 #include "lua_xml.h"
-#include "title.h"
 
 namespace {
 // Bounds how long GetDataBlocking() waits for a whole _get_data() run to
@@ -29,9 +28,10 @@ ScriptDataSource::ScriptDataSource(const std::string& path)
 
 ScriptDataSource::~ScriptDataSource()
 {
-    // Neutralize any Title-held onTriggerIn/onTriggerOut lambda immediately,
-    // before signaling/joining, so a callback firing mid-teardown is a
-    // guaranteed-safe no-op rather than a use-after-free.
+    // Neutralize any DataPool-held onTriggerIn/onTriggerOut lambda (see
+    // AliveToken()) immediately, before signaling/joining, so a callback
+    // firing mid-teardown is a guaranteed-safe no-op rather than a
+    // use-after-free.
     m_alive->store(false, std::memory_order_release);
 
     m_stopRequested.store(true, std::memory_order_release);
@@ -64,8 +64,8 @@ void ScriptDataSource::WorkerMain()
         m_onTriggerIn = L["_on_trigger_in"];
         m_onTriggerOut = L["_on_trigger_out"];
 
-        L.set_function("trigger_out", [this] {
-            TriggerOut();
+        L.set_function("trigger_out", [this](sol::optional<std::string> titleId) {
+            TriggerOut(titleId.value_or(std::string()));
         });
 
         sol::optional<double> interval = L["_poll_interval"];
@@ -104,13 +104,13 @@ void ScriptDataSource::WorkerMain()
         bool fetchRequested = false;
         for (auto& job : jobs) {
             if (job.kind == TriggerRequest::Kind::In && m_onTriggerIn.valid()) {
-                auto r = m_onTriggerIn(job.recordIndex, job.duration);
+                auto r = m_onTriggerIn(job.bindName, job.recordIndex, job.duration);
                 if (!r.valid()) {
                     sol::error e = r;
                     std::cerr << e.what() << std::endl;
                 }
             } else if (job.kind == TriggerRequest::Kind::Out && m_onTriggerOut.valid()) {
-                auto r = m_onTriggerOut();
+                auto r = m_onTriggerOut(job.bindName);
                 if (!r.valid()) {
                     sol::error e = r;
                     std::cerr << e.what() << std::endl;
@@ -196,29 +196,19 @@ void ScriptDataSource::FetchAndCacheData()
     m_dataCv.notify_all();
 }
 
-void ScriptDataSource::DrainPendingOutTrigger() const
-{
-    if (m_pendingOutTrigger.exchange(false, std::memory_order_acq_rel) && m_owner)
-        m_owner->TriggerOut();
-}
-
 std::vector<Record> ScriptDataSource::GetData() const
 {
-    DrainPendingOutTrigger();
-
     std::lock_guard<std::mutex> lock(m_dataMutex);
     return m_cachedRecords;
 }
 
 std::vector<Record> ScriptDataSource::GetDataBlocking() const
 {
-    DrainPendingOutTrigger();
-
     std::unique_lock<std::mutex> lock(m_dataMutex);
     uint64_t startGen = m_dataGeneration;
     lock.unlock();
 
-    EnqueueTriggerJob({TriggerRequest::Kind::FetchRequest, 0, -1.0});
+    EnqueueTriggerJob({TriggerRequest::Kind::FetchRequest, "", 0, -1.0});
 
     lock.lock();
     m_dataCv.wait_for(lock, kInstantFetchTimeout, [&] {
@@ -242,24 +232,26 @@ void ScriptDataSource::EnqueueTriggerJob(TriggerRequest job) const
     m_jobCv.notify_one();
 }
 
-void ScriptDataSource::TriggerOut()
+std::vector<std::string> ScriptDataSource::DrainOutTriggerRequests()
 {
-    m_pendingOutTrigger.store(true, std::memory_order_release);
+    std::lock_guard<std::mutex> lock(m_outTriggerMutex);
+    std::vector<std::string> drained;
+    drained.swap(m_pendingOutTriggers);
+    return drained;
 }
 
-void ScriptDataSource::SetOwner(Title* owner)
+void ScriptDataSource::NotifyTriggerIn(const std::string& bindName, size_t recordIndex, double duration)
 {
-    if (owner == m_owner) return;
-    IDataSource::SetOwner(owner);
-    if (!owner) return;
+    EnqueueTriggerJob({TriggerRequest::Kind::In, bindName, recordIndex, duration});
+}
 
-    auto alive = m_alive;
-    owner->onTriggerIn.push_back([this, alive](size_t recordIndex, double duration) {
-        if (!alive->load(std::memory_order_acquire)) return;
-        EnqueueTriggerJob({TriggerRequest::Kind::In, recordIndex, duration});
-    });
-    owner->onTriggerOut.push_back([this, alive] {
-        if (!alive->load(std::memory_order_acquire)) return;
-        EnqueueTriggerJob({TriggerRequest::Kind::Out, 0, -1.0});
-    });
+void ScriptDataSource::NotifyTriggerOut(const std::string& bindName)
+{
+    EnqueueTriggerJob({TriggerRequest::Kind::Out, bindName, 0, -1.0});
+}
+
+void ScriptDataSource::TriggerOut(const std::string& bindName)
+{
+    std::lock_guard<std::mutex> lock(m_outTriggerMutex);
+    m_pendingOutTriggers.push_back(bindName);
 }

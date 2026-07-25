@@ -38,8 +38,10 @@ public:
         return scriptFilePath;
     }
 
-    void SetOwner(Title* owner) override;
-    void PumpEvents() const override { DrainPendingOutTrigger(); }
+    std::vector<std::string> DrainOutTriggerRequests() override;
+    void NotifyTriggerIn(const std::string& bindName, size_t recordIndex, double duration) override;
+    void NotifyTriggerOut(const std::string& bindName) override;
+    std::shared_ptr<const std::atomic<bool>> AliveToken() const override { return m_alive; }
 
     // Set if the script failed to load/parse; safe to call from any thread.
     bool LoadFailed() const { return m_loadFailed.load(std::memory_order_acquire); }
@@ -57,13 +59,17 @@ private:
     std::vector<Record> RunGetData();
     void FetchAndCacheData();
 
-    // Lua-bound global `trigger_out` (script -> host). Only ever called on the
-    // worker thread; must not touch Title directly (see script.cpp). There is
+    // Lua-bound global `trigger_out(titleId)` (script -> host). Only ever
+    // called on the worker thread; must not touch a Title directly (see
+    // script.cpp) — a source no longer knows any Title, only the bind name
+    // DataPool told it about via NotifyTriggerIn/NotifyTriggerOut. `bindName`
+    // is empty for the bare `trigger_out()` form (the "every title bound to
+    // this source" sentinel — see DrainOutTriggerRequests). There is
     // deliberately no `trigger_in` counterpart: whether a title is on-screen
     // at all is the host's call, so a script asking to be *shown* is not
     // something the engine can honour meaningfully. Scripts still learn about
-    // every show/hide through _on_trigger_in/_on_trigger_out.
-    void TriggerOut();
+    // every show/hide through _on_trigger_in(titleId, ...)/_on_trigger_out(titleId).
+    void TriggerOut(const std::string& bindName);
 
     // ── cross-thread: last-fetched data, with a generation counter so
     //    GetDataBlocking() can wait for a specific fresh fetch to land ──────
@@ -74,19 +80,25 @@ private:
 
     // Shape of every inbound cross-thread message (host -> script): a FIFO
     // job-queue element, with `FetchRequest` folded in here rather than
-    // tracked as a separate flag.
+    // tracked as a separate flag. `bindName` is which binding a Kind::In/Out
+    // job is for, forwarded verbatim as the leading argument to
+    // _on_trigger_in/_on_trigger_out — unused for FetchRequest.
     struct TriggerRequest {
         enum class Kind { None, In, Out, FetchRequest } kind{Kind::None};
+        std::string bindName;
         size_t recordIndex{0};
         double duration{-1.0};
     };
 
-    // ── cross-thread: pending outbound trigger (script -> host), drained and
-    //    applied inside GetData()/GetDataBlocking()/PumpEvents(). A plain flag
-    //    rather than a TriggerRequest mailbox: since trigger_in is gone, "out"
-    //    is the only thing a script can ever send, and it carries no payload.
-    mutable std::atomic<bool> m_pendingOutTrigger{false};
-    void DrainPendingOutTrigger() const;
+    // ── cross-thread: pending outbound trigger_out(bindName) requests
+    //    (script -> host), drained by DataPool via DrainOutTriggerRequests()
+    //    and applied there — this source only ever queues them. A vector
+    //    rather than the old single atomic<bool>: now that trigger_out()
+    //    takes an optional titleId, more than one distinct request (e.g.
+    //    "a" and "b", or "a" and the bare all-titles form) can be pending at
+    //    once between two drains.
+    mutable std::mutex m_outTriggerMutex;
+    mutable std::vector<std::string> m_pendingOutTriggers;
 
     // ── cross-thread: inbound job queue (host -> script), consumed by the
     //    worker thread; a FetchRequest job requests an immediate out-of-band
@@ -105,8 +117,11 @@ private:
     std::thread m_worker;
     std::atomic<bool> m_stopRequested{false};
 
-    // Neutralizes Title-held onTriggerIn/onTriggerOut lambdas the instant
-    // destruction begins, so a stale callback firing mid-teardown becomes a
-    // safe no-op instead of touching a half-destroyed ScriptDataSource.
+    // Neutralizes DataPool-held onTriggerIn/onTriggerOut lambdas (installed
+    // by DataPool::Bind, not by this class — a source no longer knows any
+    // Title) the instant destruction begins, so a stale callback firing
+    // mid-teardown becomes a safe no-op instead of touching a
+    // half-destroyed ScriptDataSource. Exposed via AliveToken() as a
+    // defense-in-depth complement to DataPool's own per-binding guard.
     std::shared_ptr<std::atomic<bool>> m_alive = std::make_shared<std::atomic<bool>>(true);
 };

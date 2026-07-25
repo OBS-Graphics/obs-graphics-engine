@@ -38,12 +38,14 @@ struct Title {
     double duration{-1.0};
     int zOrder{0};
 
-    IDataSource* dataSource{nullptr};
+    // Which record (from whatever records a caller last handed in) an
+    // element-id lookup indexes into; set by TriggerIn, reused by every
+    // subsequent UpdateData call while Visible (see DataPool::Tick).
     size_t dataRecordIndex{0};
 
     // Fired whenever TriggerIn/TriggerOut runs, regardless of origin (host call,
-    // duration timeout, or a script's trigger_in()/trigger_out()). Multiple
-    // subscribers (e.g. a host UI and a ScriptDataSource) can listen at once.
+    // duration timeout, or a script's trigger_out()). Multiple subscribers
+    // (e.g. a host UI and a DataPool binding) can listen at once.
     std::vector<std::function<void(size_t recordIndex, double duration)>> onTriggerIn;
     std::vector<std::function<void()>> onTriggerOut;
 
@@ -56,9 +58,20 @@ struct Title {
 
     IElement* GetRoot() const { return elements.empty() ? nullptr : elements[0].get(); }
 
-    void TriggerIn(size_t recordIndex = 0, double duration = -1.0);
+    // Title never fetches its own data — a caller (typically DataPool)
+    // supplies `records` up front. If non-empty, they're applied instantly
+    // (SetContentInstant) before the AnimatingIn transition starts; pass an
+    // empty vector to trigger in without an instant data change (e.g. a
+    // periodic poll will catch up once Visible).
+    void TriggerIn(size_t recordIndex = 0, double duration = -1.0, const std::vector<Record>& records = {});
     void TriggerOut();
-    void UpdateData();
+
+    // Applies `records[dataRecordIndex % records.size()]` to matching
+    // elements by id (SetContentInstant if `instant`, else the animated
+    // SetContent). No-op if `records` is empty. Called by TriggerIn (instant
+    // apply) and by DataPool::Tick (periodic Visible-only refresh) — Title
+    // itself never decides when to poll, it only ever applies what it's handed.
+    void UpdateData(const std::vector<Record>& records, bool instant);
     VisualElement& GetById(const std::string& id);
 
     void Tick(float dt);
@@ -76,7 +89,6 @@ struct Title {
 private:
     void RenderElements(cairo_t* ctx) const;
 
-    double updateTimer{0.0}, prevUpdateTimer{0.0};
     std::string m_tempAssetDir;
     std::vector<uint8_t> m_thumbnail;
     LoadDiagnostic m_loadDiagnostic;
