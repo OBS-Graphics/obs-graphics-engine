@@ -57,9 +57,12 @@ private:
     std::vector<Record> RunGetData();
     void FetchAndCacheData();
 
-    // Lua-bound globals (script -> host). Only ever called on the worker
-    // thread; must not touch Title directly (see script.cpp).
-    void TriggerIn(size_t recordIndex = 0, double duration = -1.0);
+    // Lua-bound global `trigger_out` (script -> host). Only ever called on the
+    // worker thread; must not touch Title directly (see script.cpp). There is
+    // deliberately no `trigger_in` counterpart: whether a title is on-screen
+    // at all is the host's call, so a script asking to be *shown* is not
+    // something the engine can honour meaningfully. Scripts still learn about
+    // every show/hide through _on_trigger_in/_on_trigger_out.
     void TriggerOut();
 
     // ── cross-thread: last-fetched data, with a generation counter so
@@ -69,21 +72,20 @@ private:
     mutable std::vector<Record> m_cachedRecords;
     mutable uint64_t m_dataGeneration{0};
 
-    // Shared shape for every trigger-related cross-thread message: used both
-    // as a FIFO job-queue element (host -> script; `FetchRequest` is folded
-    // in here too, rather than tracked as a separate flag) and as a
-    // single-slot mailbox (script -> host; only that direction ever uses
-    // `None` as "empty").
+    // Shape of every inbound cross-thread message (host -> script): a FIFO
+    // job-queue element, with `FetchRequest` folded in here rather than
+    // tracked as a separate flag.
     struct TriggerRequest {
         enum class Kind { None, In, Out, FetchRequest } kind{Kind::None};
         size_t recordIndex{0};
         double duration{-1.0};
     };
 
-    // ── cross-thread: pending outbound trigger request (script -> host),
-    //    drained and applied inside GetData()/GetDataBlocking()/PumpEvents() ──
-    mutable std::mutex m_pendingOutMutex;
-    mutable TriggerRequest m_pendingOut;
+    // ── cross-thread: pending outbound trigger (script -> host), drained and
+    //    applied inside GetData()/GetDataBlocking()/PumpEvents(). A plain flag
+    //    rather than a TriggerRequest mailbox: since trigger_in is gone, "out"
+    //    is the only thing a script can ever send, and it carries no payload.
+    mutable std::atomic<bool> m_pendingOutTrigger{false};
     void DrainPendingOutTrigger() const;
 
     // ── cross-thread: inbound job queue (host -> script), consumed by the

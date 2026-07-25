@@ -11,7 +11,7 @@ cmake --build build -j$(nproc)
 
 sol2, cpp-zipper, and nlohmann/json are fetched automatically by CPM at configure time. cpp-zipper wraps system minizip (`libminizip-dev` must be installed).
 
-sol2/Lua are only fetched and built when `ENABLE_LUA_SCRIPTING` (default `ON`) is enabled. Pass `-DENABLE_LUA_SCRIPTING=OFF` to skip them entirely — e.g. for a consumer (like the editor) that never uses `ScriptDataSource`.
+sol2/Lua, libcurl, and pugixml are only fetched and built when `ENABLE_LUA_SCRIPTING` (default `ON`) is enabled. Pass `-DENABLE_LUA_SCRIPTING=OFF` to skip them entirely — e.g. for a consumer (like the editor) that never uses `ScriptDataSource`.
 
 ## Source files
 
@@ -30,6 +30,9 @@ All sources live at repo root (no `src/` subdirectory):
 - `types.hpp` — `Paint`, `Point`, `Size`, `Rectangle`, `Transform`, `ScaleMode` — core shared types
 - `data-source.h/cpp` — `IDataSource`, JSON/CSV data source implementations
 - `script.h/cpp` — `ScriptDataSource` (Lua via sol2); compiled only when `ENABLE_LUA_SCRIPTING=ON` (default)
+- `lua_http.h/cpp` — `http` Lua global table (libcurl); Lua-only, same CMake gate as `script.cpp`
+- `lua_json.h/cpp` — `json` Lua global table (nlohmann/json); Lua-only, same gate
+- `lua_xml.h/cpp` — `xml` Lua global table (pugixml); Lua-only, same gate
 - `qr.hpp` — single-header QR encoder (header-only, `QR_IMPLEMENTATION` defined in `qr.cpp`)
 - `stb.cpp` — single translation unit that provides `stb_image` implementation (`STB_IMAGE_IMPLEMENTATION`)
 
@@ -71,7 +74,7 @@ IElement          (element.h)     — id, parent/child tree, virtual Render/Appl
 
 **`Title`** — Standalone presentation unit. Holds `width`/`height`, `metadata` (arbitrary JSON), an elements vector (root at [0], VisualElements at [1..]), and a state machine: `Hidden → AnimatingIn → Visible → AnimatingOut → Hidden`. `Tick(dt)` advances the animation timer and, while Visible, calls `TickData(dt)` on each VisualElement to drive per-element data-change animations. `Render(cr)` draws direct children of root sorted by `zOrder`. Loads/saves as `.ogt` (zip archive, see below).
 
-`TriggerIn(recordIndex, duration)` / `TriggerOut()` drive the state machine and are the single choke point for every trigger origin — a direct host call, the `duration` timeout below, or a script's `trigger_in()`/`trigger_out()` (see Lua scripting). Both fire every subscriber in `onTriggerIn`/`onTriggerOut` (`std::vector<std::function<...>>` — multiple listeners, e.g. a host UI and a `ScriptDataSource`, can coexist without clobbering each other).
+`TriggerIn(recordIndex, duration)` / `TriggerOut()` drive the state machine and are the single choke point for every trigger origin — a direct host call, the `duration` timeout below, or a script's `trigger_out()` (see Lua scripting). Both fire every subscriber in `onTriggerIn`/`onTriggerOut` (`std::vector<std::function<...>>` — multiple listeners, e.g. a host UI and a `ScriptDataSource`, can coexist without clobbering each other).
 
 `duration` (seconds, default `-1.0` = no auto-hide) is passed to `TriggerIn` and, while `Visible`, `Tick` auto-fires `TriggerOut()` once that much Visible-time has elapsed — a "timed title." The bound `IDataSource` is polled on a fixed 0.25s cadence via `UpdateData()`, but **only while `Visible`** — `TriggerIn` still applies data instantly when called from `Hidden` (`SetContentInstant`), it just doesn't get periodically re-polled outside `Visible`.
 
@@ -203,10 +206,30 @@ Built only when the CMake option `ENABLE_LUA_SCRIPTING` (default `ON`) is enable
 | Lua global | Direction | Called |
 |---|---|---|
 | `_get_data()` | script → engine | Every `GetData()` pull (instant update, or the 0.25s Visible-only poll). Must return a table of record-tables (string/number/bool values, converted to strings). |
-| `_on_trigger_in(recordIndex, duration)` / `_on_trigger_out()` | engine → script | Whenever the owning `Title` is triggered in/out, from **any** origin (host call, `duration` timeout, or this script's own `trigger_in`/`trigger_out`) — wired up in `ScriptDataSource::SetOwner` as a subscriber on `Title::onTriggerIn`/`onTriggerOut`, exactly like a host UI listener would be. |
-| `trigger_in(recordIndex?, duration?)` / `trigger_out()` | script → engine | Bound into the Lua globals in the constructor; forwards to `m_owner->TriggerIn/TriggerOut`. Lets a script drive its own title's state machine. |
+| `_on_trigger_in(recordIndex, duration)` / `_on_trigger_out()` | engine → script | Whenever the owning `Title` is triggered in/out, from **any** origin (host call, `duration` timeout, or this script's own `trigger_out`) — wired up in `ScriptDataSource::SetOwner` as a subscriber on `Title::onTriggerIn`/`onTriggerOut`, exactly like a host UI listener would be. |
+| `trigger_out()` | script → engine | Bound into the Lua globals on the worker thread, **after** `safe_script_file` — so it is callable from `_get_data`/`_on_trigger_*`, but *not* at script load time. Sets a flag that `DrainPendingOutTrigger()` applies as `m_owner->TriggerOut()` on the host thread. |
 
-These are two independent, one-directional channels — `_on_trigger_in`/`_on_trigger_out` do not imply `trigger_in`/`trigger_out` and vice versa. See `tests/test_script_trigger.cpp` for exercised examples of each.
+There is deliberately **no `trigger_in`** counterpart: whether a title is on-screen at all is the host's call, so a script asking to be *shown* isn't something the engine can honour meaningfully. Scripts still learn about every show through `_on_trigger_in`.
+
+These are two independent, one-directional channels — `_on_trigger_in`/`_on_trigger_out` do not imply `trigger_out` and vice versa. See `tests/test_script_trigger.cpp` for exercised examples of each.
+
+### Injected Lua globals
+
+Three tables are registered on the `sol::state` in `ScriptDataSource::WorkerMain`, after `open_libraries()` and **before** `safe_script_file()`, so they are usable anywhere in the script rather than only inside `_get_data`:
+
+| Table | File | Functions |
+|---|---|---|
+| `http` | `lua_http.h/cpp` | `get`, `post`, `put`, `patch`, `delete_` — blocking libcurl requests; each returns `{ok, status, body, error_msg, headers}`. Has a process-global `SetPermissionGate` hook. |
+| `json` | `lua_json.h/cpp` | `decode`, `encode`, `null`, `array` — over nlohmann/json |
+| `xml` | `lua_xml.h/cpp` | `decode`, `find`, `find_all` — over pugixml |
+
+`json`/`xml` are pure functions over their arguments (no process-global state, no mutex, no permission gate) and return `nil, errmsg` on failure rather than raising, so a malformed payload is a branch in the script, not a script error.
+
+- `json.decode` maps object → string-keyed table, array → 1-based table, `null` → the `json.null` lightuserdata sentinel. `json.encode` treats a table keyed exactly `1..n` as an array and anything else as an object; `json.array(t)` tags `t` (via a `__jsontype` metatable field) so an empty table still encodes as `[]`. Cycles and non-encodable values are rejected with an error string. Integral floats encode without a `.0`; non-finite numbers are an error.
+- `xml.decode` converts eagerly into plain Lua tables — `{ name, attr, text, children }`, where `text` is the concatenated *direct* text/CDATA children only — so nothing holds a `pugi::xml_document` alive and a node survives the call. XPath is intentionally not exposed for that reason; `find`/`find_all` are thin scans over `node.children`.
+- Both cap recursion at `kMaxDepth` (200). Note nlohmann's own parser depth is unbounded, so a pathologically deep JSON document can still exhaust the stack inside `json.decode`.
+
+`tests/test_script_data_parse.cpp` covers both tables; the assertions themselves live in Lua and come back as a record, which doubles as the end-to-end proof that a script can parse a payload straight into engine records.
 
 ## Conventions
 

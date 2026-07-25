@@ -31,11 +31,12 @@ On Windows, install OpenSSL via [vcpkg](https://github.com/microsoft/vcpkg) (`vc
 | [sol2](https://github.com/ThePhD/sol2) | v3.5.0 | C++ Lua bindings |
 | [curl/curl](https://github.com/curl/curl) | curl-8_21_0 | HTTP(S) client backing the Lua `http.*` table (statically linked, OpenSSL backend) |
 | [yhirose/cpp-httplib](https://github.com/yhirose/cpp-httplib) | v0.49.0 | Local mock HTTP server, **test-only** (not linked into `engine`) |
-| [nlohmann/json](https://github.com/nlohmann/json) | v3.12.0 | JSON parsing/serialization |
+| [zeux/pugixml](https://github.com/zeux/pugixml) | v1.15 | XML parser backing the Lua `xml.*` table (statically linked) |
+| [nlohmann/json](https://github.com/nlohmann/json) | v3.12.0 | JSON parsing/serialization, and the Lua `json.*` table |
 | [nothings/stb](https://github.com/nothings/stb) | master | Image loading (stb_image) |
 | [yhirose/cpp-zipper](https://github.com/yhirose/cpp-zipper) | master | ZIP I/O for `.ogt` files (wraps system minizip) |
 
-No manual setup needed — CPM downloads and configures all of these on first configure. `curl` and `cpp-httplib` are only fetched when `ENABLE_LUA_SCRIPTING` is on (the latter additionally requires `BUILD_TESTS`).
+No manual setup needed — CPM downloads and configures all of these on first configure. `curl`, `pugixml`, and `cpp-httplib` are only fetched when `ENABLE_LUA_SCRIPTING` is on (the last additionally requires `BUILD_TESTS`).
 
 ## Building standalone
 
@@ -79,7 +80,7 @@ Headers are then available as:
 | `Paint` | Solid, Linear, Radial, or Image fill — normalized 0–1 gradient coordinates. |
 | `AnimationDef` | Per-element animation: type, easing, duration, delay. |
 | `IDataSource` | Interface for JSON/CSV/Lua data sources bound to a Title. |
-| `ScriptDataSource` | Lua-scripted data source (via sol2) — can also drive and react to a Title's trigger state. |
+| `ScriptDataSource` | Lua-scripted data source (via sol2) — reacts to a Title's trigger state, and gets `http`/`json`/`xml` globals. |
 
 ## .ogt file format
 
@@ -112,8 +113,30 @@ Hidden ──TriggerIn()──▶ AnimatingIn ──▶ Visible ──TriggerOut
 
 While `Visible`, `Tick()` also advances per-element data-change animations and polls the bound `IDataSource` on a fixed 0.25s interval. Pass a `duration` to `TriggerIn()` to auto-`TriggerOut()` after that many seconds Visible (a "timed title"); omit it (or pass `-1`) to stay Visible until explicitly triggered out.
 
-`Title::onTriggerIn` / `onTriggerOut` are lists of callbacks fired whenever `TriggerIn()`/`TriggerOut()` runs, from any origin — a host UI, the `duration` timeout, or a script's own `trigger_in()`/`trigger_out()` — so a host application can react to a title's state changing regardless of what caused it.
+`Title::onTriggerIn` / `onTriggerOut` are lists of callbacks fired whenever `TriggerIn()`/`TriggerOut()` runs, from any origin — a host UI, the `duration` timeout, or a script's own `trigger_out()` — so a host application can react to a title's state changing regardless of what caused it.
 
 ## Data sources & Lua scripting
 
-`IDataSource` implementations (`JsonFileDataSource`, `CsvFileDataSource`, `ScriptDataSource`) supply per-element content, looked up by element id and applied via `SetContent`/`SetContentInstant`. `ScriptDataSource` runs a Lua script that must define `_get_data()` (returns a table of records), and may optionally define `_on_trigger_in(recordIndex, duration)` / `_on_trigger_out()` to react whenever the owning Title is triggered. Scripts can also call the bound `trigger_in(recordIndex, duration)` / `trigger_out()` Lua globals to drive the Title themselves.
+`IDataSource` implementations (`JsonFileDataSource`, `CsvFileDataSource`, `ScriptDataSource`) supply per-element content, looked up by element id and applied via `SetContent`/`SetContentInstant`. `ScriptDataSource` runs a Lua script that must define `_get_data()` (returns a table of records), and may optionally define `_on_trigger_in(recordIndex, duration)` / `_on_trigger_out()` to react whenever the owning Title is triggered. A script can also call the bound `trigger_out()` global to hide its own Title; there is deliberately no `trigger_in` counterpart, since whether a title is on-screen at all is the host's call.
+
+Scripts get three global tables injected by the engine:
+
+| Table | Functions |
+|---|---|
+| `http` | `get`, `post`, `put`, `patch`, `delete_` — blocking HTTP(S) via libcurl |
+| `json` | `decode`, `encode`, `null`, `array` — via nlohmann/json |
+| `xml` | `decode`, `find`, `find_all` — via pugixml |
+
+```lua
+function _get_data()
+    local res = http.get("https://api.example.com/scores")
+    if not res.ok or res.status ~= 200 then return {} end
+
+    local data = json.decode(res.body)
+    if not data then return {} end
+
+    return { { home = data.home.name, away = data.away.name } }
+end
+```
+
+`json.decode`/`json.encode` and `xml.decode` return `nil, errmsg` on failure rather than raising, so a malformed payload is a branch, not a script error. `xml.decode` produces plain Lua tables (`{ name, attr, text, children }`), so a node stays valid after the call returns.

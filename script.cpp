@@ -8,6 +8,8 @@
 #include <optional>
 
 #include "lua_http.h"
+#include "lua_json.h"
+#include "lua_xml.h"
 #include "title.h"
 
 namespace {
@@ -54,15 +56,14 @@ void ScriptDataSource::WorkerMain()
             sol::lib::utf8
         );
         lua_http::Register(L);
+        lua_json::Register(L);
+        lua_xml::Register(L);
         L.safe_script_file(scriptFilePath);
 
         m_getData = L["_get_data"];
         m_onTriggerIn = L["_on_trigger_in"];
         m_onTriggerOut = L["_on_trigger_out"];
 
-        L.set_function("trigger_in", [this](sol::optional<size_t> recordIndex, sol::optional<double> duration) {
-            TriggerIn(recordIndex.value_or(0), duration.value_or(-1.0));
-        });
         L.set_function("trigger_out", [this] {
             TriggerOut();
         });
@@ -197,17 +198,7 @@ void ScriptDataSource::FetchAndCacheData()
 
 void ScriptDataSource::DrainPendingOutTrigger() const
 {
-    TriggerRequest pending;
-    {
-        std::lock_guard<std::mutex> lock(m_pendingOutMutex);
-        pending = m_pendingOut;
-        m_pendingOut.kind = TriggerRequest::Kind::None;
-    }
-    if (!m_owner || pending.kind == TriggerRequest::Kind::None) return;
-
-    if (pending.kind == TriggerRequest::Kind::In)
-        m_owner->TriggerIn(pending.recordIndex, pending.duration);
-    else if (pending.kind == TriggerRequest::Kind::Out)
+    if (m_pendingOutTrigger.exchange(false, std::memory_order_acq_rel) && m_owner)
         m_owner->TriggerOut();
 }
 
@@ -251,16 +242,9 @@ void ScriptDataSource::EnqueueTriggerJob(TriggerRequest job) const
     m_jobCv.notify_one();
 }
 
-void ScriptDataSource::TriggerIn(size_t recordIndex, double duration)
-{
-    std::lock_guard<std::mutex> lock(m_pendingOutMutex);
-    m_pendingOut = {TriggerRequest::Kind::In, recordIndex, duration};
-}
-
 void ScriptDataSource::TriggerOut()
 {
-    std::lock_guard<std::mutex> lock(m_pendingOutMutex);
-    m_pendingOut = {TriggerRequest::Kind::Out, 0, -1.0};
+    m_pendingOutTrigger.store(true, std::memory_order_release);
 }
 
 void ScriptDataSource::SetOwner(Title* owner)

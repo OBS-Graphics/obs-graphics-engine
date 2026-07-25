@@ -85,6 +85,25 @@ if(ENABLE_LUA_SCRIPTING)
         set_target_properties(libcurl_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
     endif()
 
+    # pugixml: XML parser behind the Lua `xml.*` table (lua_xml.cpp). Built
+    # from source as a hand-rolled static target rather than via pugixml's own
+    # CMakeLists — it is a single translation unit, and this repo has already
+    # been bitten both by a dependency inheriting BUILD_SHARED_LIBS and by a
+    # static lib missing PIC when linked into the OBS shared module.
+    CPMAddPackage(
+        NAME pugixml
+        GITHUB_REPOSITORY zeux/pugixml
+        GIT_TAG v1.15
+        DOWNLOAD_ONLY YES
+    )
+    if(pugixml_ADDED)
+        add_library(pugixml STATIC ${pugixml_SOURCE_DIR}/src/pugixml.cpp)
+        target_include_directories(pugixml PUBLIC
+            $<BUILD_INTERFACE:${pugixml_SOURCE_DIR}/src>
+        )
+        set_target_properties(pugixml PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    endif()
+
     # cpp-httplib: header-only, MIT, test-only. Provides the local mock HTTP
     # server tests/test_script_http.cpp needs — libcurl has no server-side
     # API. Not linked into `engine`, only into that one test binary.
@@ -144,7 +163,7 @@ set(engine_sources
 )
 
 if(ENABLE_LUA_SCRIPTING)
-    list(APPEND engine_sources script.cpp lua_http.cpp)
+    list(APPEND engine_sources script.cpp lua_http.cpp lua_json.cpp lua_xml.cpp)
 endif()
 
 add_library(engine STATIC ${engine_sources})
@@ -177,6 +196,7 @@ if(ENABLE_LUA_SCRIPTING)
     )
     target_link_libraries(engine PRIVATE
         CURL::libcurl
+        pugixml
     )
 endif()
 
@@ -217,6 +237,7 @@ if(BUILD_TESTS)
     add_engine_test(test_data_anim)
     if(ENABLE_LUA_SCRIPTING)
         add_engine_test(test_script_trigger)
+        add_engine_test(test_script_data_parse)
         add_engine_test(test_script_http)
         target_link_libraries(test_script_http PRIVATE cpp_httplib)
     endif()
