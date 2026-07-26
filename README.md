@@ -72,6 +72,7 @@ Headers are then available as:
 
 | Type | Description |
 |---|---|
+| `Scene` | Owns the Titles a host has open plus their `DataPool`; ticks and renders them — the per-collection/profile runtime unit. |
 | `Title` | Self-contained presentation unit — width/height, element tree, state machine, load/save `.ogt`. |
 | `IElement` | Base class: id, parent/child tree. |
 | `Spatial` | Adds bounds, rotation, shear, world-position tracking. |
@@ -79,9 +80,9 @@ Headers are then available as:
 | `RectangleElement` / `TextElement` / `ImageElement` / `QrElement` | Concrete element types. |
 | `Paint` | Solid, Linear, Radial, or Image fill — normalized 0–1 gradient coordinates. |
 | `AnimationDef` | Per-element animation: type, easing, duration, delay. |
-| `IDataSource` | Interface for a JSON/CSV/Lua source of records; knows nothing about any Title. |
-| `DataPool` | Owns every `IDataSource`, polls each once per tick, and pushes records into every Title bound to it — see below. |
-| `ScriptDataSource` | Lua-scripted data source (via sol2) — reacts to a bound Title's trigger state, and gets `http`/`json`/`xml` globals. |
+| `IDataSource` | Interface for a JSON/CSV/Lua source of records; carries a generated uuid, knows nothing about any Title. |
+| `DataPool` | Owns every `IDataSource`, polls each on a 0.25s cadence, and caches (and versions) what it got — see below. |
+| `ScriptDataSource` | Lua-scripted data source (via sol2) — reacts to a Title's trigger state, and gets `scene`/`http`/`json`/`xml` globals. |
 
 ## .ogt file format
 
@@ -112,44 +113,51 @@ t.Render(cairo_ctx);
 Hidden ──TriggerIn()──▶ AnimatingIn ──▶ Visible ──TriggerOut()──▶ AnimatingOut ──▶ Hidden
 ```
 
-While `Visible`, `Tick()` advances per-element data-change animations. `Title` no longer polls any data source itself — see **Data sources & DataPool** below for how records reach a `Title` on a per-frame basis. Pass a `duration` to `TriggerIn()` to auto-`TriggerOut()` after that many seconds Visible (a "timed title"); omit it (or pass `-1`) to stay Visible until explicitly triggered out.
+While `Visible`, `Tick()` advances per-element data-change animations and pulls fresh records from the pool (see **Scene, data sources & DataPool** below). Pass a `duration` to `TriggerIn()` to auto-`TriggerOut()` after that many seconds Visible (a "timed title"); omit it (or pass `-1`) to stay Visible until explicitly triggered out.
+
+Every `Title` also carries two identities: `id`, a generated uuid that is unique within a `Scene` and is what a Lua script targets, and `name`, the human-readable name an operator sees. Both round-trip through `title.json`.
 
 `Title::onTriggerIn` / `onTriggerOut` are lists of callbacks fired whenever `TriggerIn()`/`TriggerOut()` runs, from any origin — a host UI, the `duration` timeout, or a script's own `trigger_out()` — so a host application can react to a title's state changing regardless of what caused it.
 
-## Data sources & DataPool
+## Scene, data sources & DataPool
 
-`Title` holds no data-source pointer and never fetches anything itself — it only ever applies records a caller hands it, via `TriggerIn(recordIndex, duration, records)` (instant apply, e.g. from `Hidden`) or `UpdateData(records, instant)` (the shared apply step, e.g. from a periodic poll). `DataPool` owns every `IDataSource`, polls each once per tick, and pushes freshly-fetched records into every `Title` bound to it:
+A `Scene` owns the Titles a host has open and the `DataPool` behind them. `DataPool` owns every `IDataSource` and does exactly one job: poll each source on a 0.25s cadence and cache what it got. It knows nothing about Titles — a `Title` stores the id of the source it reads and pulls that cache itself:
 
 ```cpp
-DataPool pool;
-pool.Add("scoreboard", std::make_unique<JsonFileDataSource>("scores.json"));
-pool.Bind(&title, "scoreboard", /*bindName=*/"main");
+Scene scene;
+auto sourceId = scene.Pool().Add(std::make_unique<JsonFileDataSource>("scores.json"));
+
+Title* title = scene.AddTitle(std::make_unique<Title>(Title::Load("scoreboard.ogt")));
+title->dataSourceId = sourceId;
+
+title->TriggerIn();  // blocking fresh fetch, then animates in
 // ... in render loop, once per frame:
-pool.Tick(dt);       // refreshes the source (Visible-gated, 0.25s cadence) and delivers to bound Titles
-title.Tick(dt);
-title.Render(cairo_ctx);
+scene.Tick(dt);      // refresh sources, dispatch script triggers, tick every title
+scene.Render(cairo_ctx);
 ```
 
-Binding a second `Title` to the same key (`pool.Bind(&title2, "scoreboard", "aux")`) shares the same underlying source — this is the whole point of `DataPool`: no single-owner `SetOwner` ping-pong when more than one Title wants the same feed. `bindName` (`"main"`/`"aux"` above) is the identity a Lua script sees as `titleId` and can target with `trigger_out(titleId)`.
+Pointing a second `Title` at the same `dataSourceId` shares the same underlying source — several titles can read one feed with no per-title fetching and no ownership handoff. Sources generate their own uuid at construction (`IDataSource::GetId()`), which is what `DataPool::Add` keys by and returns; `SetId()` lets a host restore an id it persisted. The title↔source mapping itself is *not* saved in `.ogt` — that's the host's to own per collection/profile.
 
-`IDataSource` implementations (`JsonFileDataSource`, `CsvFileDataSource`, `ScriptDataSource`) supply per-element content, looked up by element id and applied via `SetContent`/`SetContentInstant`. `ScriptDataSource` runs a Lua script that must define `_get_data()` (returns a table of records), and may optionally define `_on_trigger_in(titleId, recordIndex, duration)` / `_on_trigger_out(titleId)` to react whenever a bound Title is triggered. A script can also call `trigger_out(titleId)` to hide one specific bound title, or the bare `trigger_out()` to hide every title bound to that source; there is deliberately no `trigger_in` counterpart, since whether a title is on-screen at all is the host's call.
+Each cache carries a version that only moves when the fetched records actually differ, so a `Title` can poll every frame and still animate only on real change (`DataPool::DataIfChanged`). Showing a `Hidden` title is the one blocking path: `TriggerIn()` fetches through `DataPool::DataBlocking` (bounded) and applies the result instantly before animating in, because stale or blank data on first appearance would be worse than a brief wait.
 
-Showing a `Hidden` title with fresh data is the caller's responsibility: fetch via `pool.DataBlocking(key)` (blocks for a real fetch, bounded) and pass the result to `TriggerIn`:
+`IDataSource` implementations (`JsonFileDataSource`, `CsvFileDataSource`, `ScriptDataSource`) supply per-element content, looked up by element id and applied via `SetContent`/`SetContentInstant`. `ScriptDataSource` runs a Lua script that must define `_get_data()` (returns a table of records), and may optionally define `_on_trigger_in(title, recordIndex, duration)` / `_on_trigger_out(title)` to react whenever a title reading it is triggered — where `title` is a `{ id = ..., name = ... }` handle. A script can call `trigger_out(title)` with such a handle to hide one specific title, or the bare `trigger_out()` to hide every title reading that source; there is deliberately no `trigger_in` counterpart, since whether a title is on-screen at all is the host's call.
 
-```cpp
-auto records = pool.DataBlocking("scoreboard");
-title.TriggerIn(/*recordIndex=*/0, /*duration=*/-1.0, records);
-```
+**Threading** — a `Scene` and its Titles are single-threaded: `Tick`/`Render`/`AddTitle`/`TriggerIn`/`TriggerOut` all belong to the host's render thread. `DataPool`'s own mutex covers only source registration and caches, so a host UI thread may still `Add`/`Remove` sources; `DataBlocking()` releases that mutex before the (potentially slow) fetch, and sources are destroyed after it is released, so neither ever stalls `Tick()`.
 
-**Locking** — `DataPool`'s own mutex is always locked before a bound Title's lock (if the host passes one to `Bind`), never the reverse. `DataBlocking()` is the exception that proves the rule: it releases the pool mutex before the (potentially slow) fetch, so it never stalls `Tick()`/`Add()`/`Remove()`/`Bind()` on another thread.
-
-Scripts get three global tables injected by the engine:
+Scripts get four global tables injected by the engine:
 
 | Table | Functions |
 |---|---|
+| `scene` | `find_titles(name)` → list of `{id, name}` handles, `titles()` → all of them |
 | `http` | `get`, `post`, `put`, `patch`, `delete_` — blocking HTTP(S) via libcurl |
 | `json` | `decode`, `encode`, `null`, `array` — via nlohmann/json |
 | `xml` | `decode`, `find`, `find_all` — via pugixml |
+
+```lua
+for _, t in ipairs(scene.find_titles("ticker")) do
+    trigger_out(t)
+end
+```
 
 ```lua
 function _get_data()

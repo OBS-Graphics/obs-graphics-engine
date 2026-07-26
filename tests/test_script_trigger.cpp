@@ -2,35 +2,32 @@
 // Copyright (c) 2026 Diego Lopes <diego95lopes@gmail.com>
 //
 // Headless console test (no SDL, no rendering): verifies
-//  - Title::onTriggerIn / onTriggerOut fire on every TriggerIn/TriggerOut call,
-//    with both a host-UI-style listener and a DataPool-installed listener
-//    (registered via DataPool::Bind) coexisting on the same event lists
-//  - The DataPool-installed listener relays into a bound ScriptDataSource's
-//    Lua _on_trigger_in(titleId, ...)/_on_trigger_out(titleId) functions, if the
-//    script defines them (via ScriptDataSource's own worker thread, so these
-//    assertions poll-with-timeout instead of checking immediately)
-//  - Lua scripts can call trigger_out(titleId) to hide one specific bound
-//    title, or bare trigger_out() to hide every title bound to that source —
-//    both marshaled back to the host through DataPool::Tick's drain/apply
-//    step, so these also poll (DataPool::Tick must actually be driven, not
-//    just anything touching the source). There is no trigger_in()
-//    counterpart — whether a title is on-screen at all is the host's call.
+//  - Title::onTriggerIn / onTriggerOut fire on every TriggerIn/TriggerOut call
+//    for a host-UI-style listener
+//  - A Title's show/hide is relayed into the ScriptDataSource it reads, and
+//    surfaces in Lua as _on_trigger_in(title, recordIndex, duration) /
+//    _on_trigger_out(title), where `title` is a { id = uuid, name = ... }
+//    handle (via ScriptDataSource's own worker thread, so these assertions
+//    poll-with-timeout instead of checking immediately)
+//  - Lua scripts can call trigger_out(title) with a handle from
+//    scene.find_titles(name) to hide one specific title, or bare trigger_out()
+//    to hide every title reading that source — both marshaled back to the host
+//    through Scene::Tick's drain/apply step, so these also poll (Scene::Tick
+//    must actually be driven). There is no trigger_in() counterpart — whether
+//    a title is on-screen at all is the host's call.
 //  - Title::duration auto-fires TriggerOut() once Visible time elapses
-//  - The periodic data poll in DataPool::Tick only refreshes/delivers while
-//    (at least one bound) Title is Visible
-//  - TriggerIn from Hidden applies records the *caller* fetched up front via
-//    DataPool::DataBlocking() (Title itself never fetches), even when
-//    _get_data is slow — no polling needed there
-//  - Two Titles bound to the same ScriptDataSource both receive records, each
-//    gets its own _on_trigger_in(titleId, ...) with the right titleId, and
-//    trigger_out("a") hides only "a", leaving "b" Visible
+//  - TriggerIn from Hidden blocks on a fresh fetch (DataPool::DataBlocking)
+//    even when _get_data is slow, so the first frame shows real data
+//  - Two Titles reading the same ScriptDataSource both receive records, each
+//    gets its own _on_trigger_in(title, ...) with the right handle, and a
+//    script-side scene.find_titles("a") -> trigger_out(t) hides only "a"
 
-#include "title.h"
-#include "data-pool.h"
 #include "element_rectangle.h"
 #include "element_text.h"
+#include "scene.h"
 #include "script.h"
 #include "script_test_util.h"
+#include "title.h"
 
 #include <chrono>
 #include <cstdlib>
@@ -44,6 +41,13 @@ using script_test_util::WriteScript;
 
 namespace {
 
+std::unique_ptr<Title> MakeTitle(const std::string& name)
+{
+    auto title = std::make_unique<Title>();
+    title->name = name;
+    return title;
+}
+
 std::unique_ptr<RectangleElement> MakeShortAnimElement(const char* id)
 {
     auto el = std::make_unique<RectangleElement>();
@@ -54,27 +58,40 @@ std::unique_ptr<RectangleElement> MakeShortAnimElement(const char* id)
     return el;
 }
 
+// Adds a text element with the given id to `title` and returns it.
+TextElement* AddText(Title& title, const char* id)
+{
+    auto el = std::make_unique<TextElement>();
+    el->SetId(id);
+    TextElement* raw = el.get();
+    title.GetRoot()->AddChild(raw);
+    title.elements.push_back(std::move(el));
+    return raw;
+}
+
 // ── Scenario A: _on_trigger_in / _on_trigger_out + Title::onTriggerIn/onTriggerOut ──
 
 void ScenarioA()
 {
     std::string path = WriteScript("scenario_a", R"lua(
 local inCount, outCount = 0, 0
-local lastId, lastIdx, lastDur = "", -1, -1
+local lastId, lastName, lastIdx, lastDur = "", "", -1, -1
 
 function _get_data()
     return { { in_count = tostring(inCount), out_count = tostring(outCount),
-               last_id = lastId, last_idx = tostring(lastIdx), last_dur = tostring(lastDur) } }
+               last_id = lastId, last_name = lastName,
+               last_idx = tostring(lastIdx), last_dur = tostring(lastDur) } }
 end
 
-function _on_trigger_in(titleId, recordIndex, duration)
+function _on_trigger_in(title, recordIndex, duration)
     inCount = inCount + 1
-    lastId = titleId
+    lastId = title.id
+    lastName = title.name
     lastIdx = recordIndex
     lastDur = duration
 end
 
-function _on_trigger_out(titleId)
+function _on_trigger_out(title)
     outCount = outCount + 1
 end
 )lua");
@@ -82,32 +99,31 @@ end
     auto ds = std::make_unique<ScriptDataSource>(path);
     ScriptDataSource* dsPtr = ds.get();
 
-    DataPool pool;
-    pool.Add("a", std::move(ds));
-    Title title;
-    pool.Bind(&title, "a", "a");
+    Scene scene;
+    const std::string sourceId = scene.Pool().Add(std::move(ds));
+    Title* title = scene.AddTitle(MakeTitle("lower_third"));
+    title->dataSourceId = sourceId;
 
     bool cppIn = false, cppOut = false;
     size_t cppIdx = 999;
     double cppDur = -999.0;
-    // A host-UI-style listener, registered alongside whatever DataPool
-    // installs for its binding once Bind() is called (see Title::onTriggerIn).
-    // These fire synchronously on the host thread, regardless of
-    // ScriptDataSource's worker-thread internals.
-    title.onTriggerIn.push_back([&](size_t idx, double dur) { cppIn = true; cppIdx = idx; cppDur = dur; });
-    title.onTriggerOut.push_back([&] { cppOut = true; });
+    // A host-UI-style listener. These fire synchronously on the host thread,
+    // regardless of ScriptDataSource's worker-thread internals.
+    title->onTriggerIn.push_back([&](size_t idx, double dur) { cppIn = true; cppIdx = idx; cppDur = dur; });
+    title->onTriggerOut.push_back([&] { cppOut = true; });
 
-    title.TriggerIn(4, 1.25);
+    title->TriggerIn(4, 1.25);
     Check(cppIn, "ScenarioA: host UI onTriggerIn listener fired");
     Check(cppIdx == 4, "ScenarioA: onTriggerIn recordIndex forwarded");
     Check(cppDur == 1.25, "ScenarioA: onTriggerIn duration forwarded");
 
-    title.TriggerOut();
+    title->TriggerOut();
     Check(cppOut, "ScenarioA: host UI onTriggerOut listener fired");
 
-    // The Lua-side _on_trigger_in/_on_trigger_out only run once ScriptDataSource's
-    // worker thread dequeues the job and, separately, _get_data() is re-run —
-    // poll dsPtr->GetData() (which never blocks) until the counters catch up.
+    // The Lua-side _on_trigger_in/_on_trigger_out only run once
+    // ScriptDataSource's worker thread dequeues the job and, separately,
+    // _get_data() is re-run — poll dsPtr->GetData() (which never blocks) until
+    // the counters catch up.
     Check(
         PollUntil([&] {
             auto recs = dsPtr->GetData();
@@ -125,9 +141,16 @@ end
     Check(
         PollUntil([&] {
             auto recs = dsPtr->GetData();
-            return !recs.empty() && recs[0].count("last_id") && recs[0].at("last_id") == "a";
+            return !recs.empty() && recs[0].count("last_id") && recs[0].at("last_id") == title->id;
         }),
-        "ScenarioA: Lua _on_trigger_in saw titleId 'a' (the DataPool bindName) (async)"
+        "ScenarioA: Lua _on_trigger_in saw the title's uuid (async)"
+    );
+    Check(
+        PollUntil([&] {
+            auto recs = dsPtr->GetData();
+            return !recs.empty() && recs[0].count("last_name") && recs[0].at("last_name") == "lower_third";
+        }),
+        "ScenarioA: Lua _on_trigger_in saw the title's name (async)"
     );
     Check(
         PollUntil([&] {
@@ -145,7 +168,7 @@ end
     );
 }
 
-// ── Scenario B: Lua trigger_out() drives the owning Title, via DataPool::Tick ──
+// ── Scenario B: bare Lua trigger_out() hides every title on that source ──────
 // (and trigger_in is gone from the script API entirely)
 
 void ScenarioB()
@@ -162,29 +185,37 @@ end
 )lua");
 
     auto ds = std::make_unique<ScriptDataSource>(path);
-    DataPool pool;
-    pool.Add("b", std::move(ds));
-    Title title;
-    pool.Bind(&title, "b", "b");
-    title.state = TitleState::Visible;
+    Scene scene;
+    const std::string sourceId = scene.Pool().Add(std::move(ds));
+    Title* title = scene.AddTitle(MakeTitle("b"));
+    title->dataSourceId = sourceId;
+    title->state = TitleState::Visible;
 
-    // Lua's bare trigger_out() only stashes a pending bind-name request
-    // (the empty-string "every title bound to this source" sentinel) on the
-    // worker thread; DataPool::Tick is what drains and applies it to every
-    // bound Title, so poll by driving Tick() instead of asserting immediately.
+    // A Title with no elements finishes any animation within the same tick it
+    // starts (there is nothing left to wait on), and Scene::Tick both applies
+    // the trigger and advances the title — so give it one short-animation
+    // element, or AnimatingOut would never be observable from out here.
+    auto el = MakeShortAnimElement("a");
+    title->GetRoot()->AddChild(el.get());
+    title->elements.push_back(std::move(el));
+
+    // Lua's bare trigger_out() only stashes a pending request (the empty-string
+    // "every title reading this source" sentinel) on the worker thread;
+    // Scene::Tick is what drains and applies it, so poll by driving Tick()
+    // instead of asserting immediately.
     Check(
         PollUntil([&] {
-            pool.Tick(0.01f);
-            return title.state == TitleState::AnimatingOut;
+            scene.Tick(0.01f);
+            return title->state == TitleState::AnimatingOut;
         }),
-        "ScenarioB: Lua trigger_out() drove state to AnimatingOut via DataPool::Tick (async)"
+        "ScenarioB: bare Lua trigger_out() drove state to AnimatingOut via Scene::Tick (async)"
     );
 
     // A script calling the removed trigger_in() must fail loudly (Lua "attempt
     // to call a nil value") rather than silently no-op. _get_data() errors are
-    // caught by the protected call, so the observable effect is that no
-    // records ever land. This doesn't need a DataPool at all — it's purely
-    // about the raw ScriptDataSource's Lua environment.
+    // caught by the protected call, so the observable effect is that no records
+    // ever land. This doesn't need a Scene at all — it's purely about the raw
+    // ScriptDataSource's Lua environment.
     std::string path2 = WriteScript("scenario_b2", R"lua(
 function _get_data()
     trigger_in(9, 2.5)
@@ -205,22 +236,20 @@ end
     Check(title2.state == TitleState::Hidden, "ScenarioB: removed trigger_in() cannot show a Title");
 }
 
-// ── Scenario F: a script's own trigger_out() takes effect purely through
-// DataPool::Tick's drain/apply step, with no Title::Tick() and no direct
-// GetData() call at all. The title is deliberately parked in AnimatingIn
-// (behind a long in-animation) for the whole test — trigger_out()'s
-// mapping-and-apply in DataPool::Tick is unconditional on any binding's
-// state (see step (a) in data-pool.h), so it must still land even though the
-// title is never Visible and Title::Tick is never called here.
+// ── Scenario F: a script's own trigger_out() applies regardless of state ────
+// The title is deliberately parked in AnimatingIn (behind a long in-animation)
+// for the whole test — Scene::Tick's drain/apply step is unconditional on a
+// title's state (other than the already-Hidden/AnimatingOut guard), so it must
+// still land even though the title never becomes Visible.
 
 void ScenarioF()
 {
     std::string path = WriteScript("scenario_f", R"lua(
 local armed, fired = false, false
 
--- Arm only once the host has actually shown us, so the worker's startup
--- fetch can't stash a trigger_out before the title is even triggered.
-function _on_trigger_in(titleId, recordIndex, duration)
+-- Arm only once the host has actually shown us, so the worker's startup fetch
+-- can't stash a trigger_out before the title is even triggered.
+function _on_trigger_in(title, recordIndex, duration)
     armed = true
 end
 
@@ -234,10 +263,10 @@ end
 )lua");
 
     auto ds = std::make_unique<ScriptDataSource>(path);
-    DataPool pool;
-    pool.Add("f", std::move(ds));
-    Title title;
-    pool.Bind(&title, "f", "f");
+    Scene scene;
+    const std::string sourceId = scene.Pool().Add(std::move(ds));
+    Title* title = scene.AddTitle(MakeTitle("f"));
+    title->dataSourceId = sourceId;
 
     // Long in-animation so the title stays in AnimatingIn for the whole test.
     auto el = std::make_unique<RectangleElement>();
@@ -245,30 +274,26 @@ end
     el->SetBounds({0.0, 0.0, 100.0, 100.0});
     el->inAnimation  = {AnimationType::Fade, Easing::Linear, 5.0f, 0.0f};
     el->outAnimation = {AnimationType::Fade, Easing::Linear, 0.05f, 0.0f};
-    title.GetRoot()->AddChild(el.get());
-    title.elements.push_back(std::move(el));
+    title->GetRoot()->AddChild(el.get());
+    title->elements.push_back(std::move(el));
 
-    title.TriggerIn();
-    Check(title.state == TitleState::AnimatingIn, "ScenarioF: host TriggerIn puts Title in AnimatingIn");
+    title->TriggerIn();
+    Check(title->state == TitleState::AnimatingIn, "ScenarioF: host TriggerIn puts Title in AnimatingIn");
 
-    // Only DataPool::Tick is driven from here on — never title.Tick(), never
-    // any GetData() call.
     Check(
         PollUntil([&] {
-            pool.Tick(0.01f);
-            return title.state == TitleState::AnimatingOut;
+            scene.Tick(0.01f);
+            return title->state == TitleState::AnimatingOut;
         }),
-        "ScenarioF: Lua's own trigger_out() applied via DataPool::Tick alone, "
+        "ScenarioF: Lua's own trigger_out() applied via Scene::Tick alone, "
         "with the title stuck in AnimatingIn the whole time"
     );
 }
 
-// ── Scenario E: TriggerIn from Hidden applies caller-fetched data ──────────────
-// Title never fetches its own data anymore — the caller (here, the test
-// itself, standing in for the host) must fetch via DataPool::DataBlocking()
-// up front and hand the records to TriggerIn. DataBlocking() waits for a
-// real, fresh fetch (even when _get_data is slow) before returning — no
-// polling needed here, unlike every other async path above.
+// ── Scenario E: TriggerIn from Hidden blocks for fresh data ─────────────────
+// Title::TriggerIn fetches through DataPool::DataBlocking(), which waits for a
+// real, fresh fetch (even when _get_data is slow) before returning — so no
+// polling is needed here, unlike every other async path above.
 
 void ScenarioE()
 {
@@ -282,117 +307,113 @@ end
 )lua");
 
     auto ds = std::make_unique<ScriptDataSource>(path);
-    DataPool pool;
-    pool.Add("e", std::move(ds));
-    Title title;
-    pool.Bind(&title, "e", "e");
+    Scene scene;
+    const std::string sourceId = scene.Pool().Add(std::move(ds));
+    Title* title = scene.AddTitle(MakeTitle("e"));
+    title->dataSourceId = sourceId;
+    TextElement* el = AddText(*title, "greeting");
 
-    auto el = std::make_unique<TextElement>();
-    el->SetId("greeting");
-    title.GetRoot()->AddChild(el.get());
-    TextElement* elPtr = el.get();
-    title.elements.push_back(std::move(el));
+    Check(title->state == TitleState::Hidden, "ScenarioE: Title starts Hidden");
 
-    Check(title.state == TitleState::Hidden, "ScenarioE: Title starts Hidden");
-
-    // Stand-in for what a host does before showing a Hidden title: fetch
-    // fresh data (blocking, bounded) and pass it straight to TriggerIn.
-    auto records = pool.DataBlocking("e");
-    title.TriggerIn(0, -1.0, records);
+    title->TriggerIn();
     Check(
-        elPtr->text == "hello",
-        "ScenarioE: DataBlocking() blocked until fresh (slow) data was ready; "
-        "TriggerIn applied it instantly, no poll needed"
+        el->text == "hello",
+        "ScenarioE: TriggerIn blocked until fresh (slow) data was ready and applied it instantly"
     );
 }
 
-// ── Scenario G: one ScriptDataSource bound to TWO titles ───────────────────────
-// The whole point of DataPool: a single source, shared by more than one
-// Title, without the old single-owner SetOwner ping-pong. Verifies both
-// titles receive records, each gets its own _on_trigger_in(titleId, ...) with
-// the right titleId, and trigger_out("a") hides only "a" — "b" stays Visible.
+// ── Scenario G: one ScriptDataSource read by TWO titles ─────────────────────
+// A single source shared by more than one Title. Verifies both titles receive
+// records, each gets its own _on_trigger_in(title, ...) with the right handle,
+// and that the script can look a title up by name (scene.find_titles) and hide
+// exactly that one — leaving the other Visible.
 
 void ScenarioG()
 {
     std::string path = WriteScript("scenario_g", R"lua(
 local insA, insB = false, false
 local firedOutA = false
+local foundCount = -1
 
 function _get_data()
-    -- Once both titles have checked in, ask the pool to hide "a" specifically —
-    -- exercises trigger_out(titleId) targeting one binding out of several.
-    if insA and insB and not firedOutA then
+    local matches = scene.find_titles("a")
+    foundCount = #matches
+
+    -- Once both titles have checked in, ask the host to hide "a" specifically.
+    if insA and insB and not firedOutA and foundCount == 1 then
         firedOutA = true
-        trigger_out("a")
+        trigger_out(matches[1])
     end
-    return { { greeting = "hi", seen_a = tostring(insA), seen_b = tostring(insB) } }
+
+    return { { greeting = "hi",
+               seen_a = tostring(insA), seen_b = tostring(insB),
+               found = tostring(foundCount),
+               total = tostring(#scene.titles()) } }
 end
 
-function _on_trigger_in(titleId, recordIndex, duration)
-    if titleId == "a" then insA = true end
-    if titleId == "b" then insB = true end
+function _on_trigger_in(title, recordIndex, duration)
+    if title.name == "a" then insA = true end
+    if title.name == "b" then insB = true end
 end
 )lua");
 
     auto ds = std::make_unique<ScriptDataSource>(path);
     ScriptDataSource* dsPtr = ds.get();
 
-    DataPool pool;
-    pool.Add("g", std::move(ds));
+    Scene scene;
+    const std::string sourceId = scene.Pool().Add(std::move(ds));
 
-    Title titleA, titleB;
-    auto elA = std::make_unique<TextElement>();
-    elA->SetId("greeting");
-    titleA.GetRoot()->AddChild(elA.get());
-    TextElement* elAPtr = elA.get();
-    titleA.elements.push_back(std::move(elA));
+    Title* titleA = scene.AddTitle(MakeTitle("a"));
+    Title* titleB = scene.AddTitle(MakeTitle("b"));
+    titleA->dataSourceId = sourceId;
+    titleB->dataSourceId = sourceId;
+    TextElement* elA = AddText(*titleA, "greeting");
+    TextElement* elB = AddText(*titleB, "greeting");
 
-    auto elB = std::make_unique<TextElement>();
-    elB->SetId("greeting");
-    titleB.GetRoot()->AddChild(elB.get());
-    TextElement* elBPtr = elB.get();
-    titleB.elements.push_back(std::move(elB));
+    // Publish the directory before the script looks anything up.
+    scene.Tick(0.01f);
 
-    pool.Bind(&titleA, "g", "a");
-    pool.Bind(&titleB, "g", "b");
+    // (a) Both titles fetch the shared source's records for themselves.
+    titleA->TriggerIn();
+    titleB->TriggerIn();
+    Check(elA->text == "hi", "ScenarioG: title 'a' received the shared source's records");
+    Check(elB->text == "hi", "ScenarioG: title 'b' received the shared source's records");
 
-    // (a) Both titles receive records: fetch once via DataBlocking (as a
-    // host would before showing a Hidden title) and apply to both.
-    auto records = pool.DataBlocking("g");
-    titleA.TriggerIn(0, -1.0, records);
-    titleB.TriggerIn(0, -1.0, records);
-    Check(elAPtr->text == "hi", "ScenarioG: title 'a' received the shared source's records");
-    Check(elBPtr->text == "hi", "ScenarioG: title 'b' received the shared source's records");
+    titleA->state = TitleState::Visible;
+    titleB->state = TitleState::Visible;
 
-    titleA.state = TitleState::Visible;
-    titleB.state = TitleState::Visible;
-
-    // (b) _on_trigger_in fired once per title, each with its own titleId —
-    // TriggerIn above already fired the pool-installed onTriggerIn
-    // subscriber for each binding; poll for both to land in the script.
+    // (b) _on_trigger_in fired once per title, each with its own handle.
     Check(
         PollUntil([&] {
             auto recs = dsPtr->GetData();
             return !recs.empty() && recs[0].count("seen_a") && recs[0].at("seen_a") == "true"
                 && recs[0].count("seen_b") && recs[0].at("seen_b") == "true";
         }),
-        "ScenarioG: _on_trigger_in fired once per title, each with the correct titleId (async)"
+        "ScenarioG: _on_trigger_in fired once per title, each with the correct handle (async)"
     );
 
-    // (c) Once the script sees both titles checked in, it calls
-    // trigger_out("a") itself — DataPool::Tick's drain/apply step must hide
-    // only the binding named "a" and leave "b" untouched.
+    // (c) The script sees the whole scene through the published directory.
     Check(
         PollUntil([&] {
-            pool.Tick(0.01f);
-            return titleA.state == TitleState::AnimatingOut;
+            auto recs = dsPtr->GetData();
+            return !recs.empty() && recs[0].count("found") && recs[0].at("found") == "1"
+                && recs[0].count("total") && recs[0].at("total") == "2";
         }),
-        "ScenarioG: script's trigger_out(\"a\") hid title 'a' (async)"
+        "ScenarioG: scene.find_titles(\"a\") found one title, scene.titles() saw both (async)"
     );
-    Check(titleB.state == TitleState::Visible, "ScenarioG: title 'b' was left untouched by trigger_out(\"a\")");
+
+    // (d) trigger_out(handle) hides only the title that handle names.
+    Check(
+        PollUntil([&] {
+            scene.Tick(0.01f);
+            return titleA->state == TitleState::AnimatingOut;
+        }),
+        "ScenarioG: script's trigger_out(scene.find_titles(\"a\")[1]) hid title 'a' (async)"
+    );
+    Check(titleB->state == TitleState::Visible, "ScenarioG: title 'b' was left untouched");
 }
 
-} // namespace
+}  // namespace
 
 int main()
 {
@@ -402,6 +423,7 @@ int main()
     ScenarioE();
 
     // Scenario C: timed titles — duration auto-fires TriggerOut() once Visible.
+    // No data source involved, so this drives Title::Tick directly.
     {
         Title title;
         auto el = MakeShortAnimElement("a");
@@ -437,71 +459,6 @@ int main()
             t += dt;
         }
         Check(title.state == TitleState::Hidden, "ScenarioC: reaches Hidden after out-animation");
-    }
-
-    // Scenario D: periodic data poll (DataPool::Tick) only refreshes/delivers
-    // while (at least one bound) Title is Visible.
-    {
-        struct CountingDataSource : IDataSource {
-            mutable int calls = 0;
-            std::vector<Record> GetData() const override { ++calls; return {}; }
-            std::string GetFilePath() const override { return ""; }
-        };
-
-        auto counterOwned = std::make_unique<CountingDataSource>();
-        CountingDataSource* counter = counterOwned.get();
-        DataPool pool;
-        pool.Add("d", std::move(counterOwned));
-        // Add() primes the cache with one synchronous GetData() call so a
-        // host that immediately calls Data(key) doesn't see {} until some
-        // bound Title goes Visible -- see data-pool.h's Add() doc comment.
-        Check(counter->calls == 1, "ScenarioD: Add() primed the cache with one fetch");
-        Title title;
-        pool.Bind(&title, "d", "d");
-
-        auto el = MakeShortAnimElement("a");
-        title.GetRoot()->AddChild(el.get());
-        title.elements.push_back(std::move(el));
-
-        const float dt = 0.01f;
-        for (int i = 0; i < 20; ++i) {
-            title.Tick(dt);
-            pool.Tick(dt);
-        }  // still Hidden and never triggered
-        Check(counter->calls == 1, "ScenarioD: no additional polling while Hidden and never triggered");
-
-        // Instant update while Hidden is now the caller's job: fetch once via
-        // DataBlocking (which, for a synchronous source, just calls GetData())
-        // and hand it to TriggerIn.
-        auto records = pool.DataBlocking("d");
-        Check(counter->calls == 2, "ScenarioD: DataBlocking() while Hidden does one instant fetch");
-        title.TriggerIn(0, -1.0, records);
-
-        float t = 0.0f;
-        while (title.state == TitleState::AnimatingIn && t < 1.0f) {
-            title.Tick(dt);
-            pool.Tick(dt);
-            t += dt;
-        }
-        Check(title.state == TitleState::Visible, "ScenarioD: reached Visible");
-        Check(counter->calls == 2, "ScenarioD: no polling during AnimatingIn");
-
-        t = 0.0f;
-        while (t < 0.30f) {  // more than one 0.25s poll slot
-            title.Tick(dt);
-            pool.Tick(dt);
-            t += dt;
-        }
-        Check(counter->calls == 3, "ScenarioD: exactly one periodic poll after 0.25s Visible");
-
-        title.TriggerOut();
-        t = 0.0f;
-        while (title.state != TitleState::Hidden && t < 1.0f) {
-            title.Tick(dt);
-            pool.Tick(dt);
-            t += dt;
-        }
-        Check(counter->calls == 3, "ScenarioD: no further polling once no longer Visible");
     }
 
     ScenarioG();

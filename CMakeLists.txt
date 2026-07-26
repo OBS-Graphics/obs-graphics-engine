@@ -157,6 +157,8 @@ set(engine_sources
     render_util.cpp
     animation.cpp
     title.cpp
+    scene.cpp
+    uuid.cpp
     data-source.cpp
     data-pool.cpp
     qr.cpp
@@ -240,6 +242,7 @@ if(BUILD_TESTS)
     # for a slow/throwing/scripted source) -- built and run regardless of
     # ENABLE_LUA_SCRIPTING.
     add_engine_test(test_data_pool)
+    add_engine_test(test_scene)
     if(ENABLE_LUA_SCRIPTING)
         add_engine_test(test_script_trigger)
         add_engine_test(test_script_data_parse)
@@ -257,6 +260,7 @@ if(BUILD_TESTS)
     # pass/fail detection needs nothing beyond the exit code.
     enable_testing()
     add_test(NAME test_data_pool COMMAND test_data_pool)
+    add_test(NAME test_scene COMMAND test_scene)
     if(ENABLE_LUA_SCRIPTING)
         add_test(NAME test_script_trigger COMMAND test_script_trigger)
         add_test(NAME test_script_data_parse COMMAND test_script_data_parse)

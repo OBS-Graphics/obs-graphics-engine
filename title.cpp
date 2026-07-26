@@ -3,6 +3,7 @@
 
 #include "title.h"
 
+#include "data-pool.h"
 #include "element_image.h"
 #include "element_qr.h"
 #include "element_rectangle.h"
@@ -25,7 +26,7 @@ using json = nlohmann::json;
 namespace fs = std::filesystem;
 
 static constexpr int kOgtSchemaMajor = 1;
-static constexpr int kOgtSchemaMinor = 0;
+static constexpr int kOgtSchemaMinor = 1;
 
 // Read-compatibility classification for a file's (major, minor) schema
 // version against the schema this build writes/understands.
@@ -80,11 +81,18 @@ VisualElement& Title::GetById(const std::string& id)
     throw std::runtime_error("Element with id '" + id + "' not found");
 }
 
-void Title::TriggerIn(size_t recordIndex, double duration, const std::vector<Record>& records)
+void Title::TriggerIn(size_t recordIndex, double duration)
 {
     dataRecordIndex = recordIndex;
-    if (!records.empty())
-        UpdateData(records, /*instant=*/true);
+
+    // A title coming from Hidden must show real, current data the moment it
+    // appears — hence the blocking fetch rather than whatever the pool
+    // happens to have cached. DataBlocking is bounded and never propagates a
+    // source's exceptions (see data-pool.h).
+    if (dataPool && !dataSourceId.empty()) {
+        UpdateData(dataPool->DataBlocking(dataSourceId), /*instant=*/true);
+        m_lastDataVersion = dataPool->DataVersion(dataSourceId);
+    }
 
     state = TitleState::AnimatingIn;
     timer = 0.0;
@@ -92,6 +100,9 @@ void Title::TriggerIn(size_t recordIndex, double duration, const std::vector<Rec
 
     for (auto& cb : onTriggerIn)
         if (cb) cb(recordIndex, duration);
+
+    if (dataPool && !dataSourceId.empty())
+        dataPool->NotifyTriggerIn(dataSourceId, Ref(), recordIndex, duration);
 }
 
 void Title::TriggerOut()
@@ -101,6 +112,20 @@ void Title::TriggerOut()
 
     for (auto& cb : onTriggerOut)
         if (cb) cb();
+
+    if (dataPool && !dataSourceId.empty())
+        dataPool->NotifyTriggerOut(dataSourceId, Ref());
+}
+
+void Title::UpdateData()
+{
+    if (!dataPool || dataSourceId.empty()) return;
+
+    std::vector<Record> records;
+    if (!dataPool->DataIfChanged(dataSourceId, m_lastDataVersion, records))
+        return;  // cache unchanged since the last pull — nothing to animate
+
+    UpdateData(records, /*instant=*/false);
 }
 
 void Title::UpdateData(const std::vector<Record>& records, bool instant)
@@ -124,6 +149,11 @@ void Title::UpdateData(const std::vector<Record>& records, bool instant)
 void Title::Tick(float dt)
 {
     if (state == TitleState::Visible) {
+        // Polled every frame rather than on a timer of its own: the pool owns
+        // the fetch cadence, and an unchanged cache costs one integer compare
+        // here (see DataPool::DataIfChanged).
+        UpdateData();
+
         for (size_t i = 1; i < elements.size(); ++i)
             static_cast<VisualElement*>(elements[i].get())->TickData(dt);
 
@@ -798,15 +828,11 @@ nlohmann::json SerializeElement(const IElement* el, const IElement* root) {
 // callback that mutates `j` in place so it looks like a file written at the
 // next schema version.
 //
-// NOTE: as of schema 1.0 there have been NO breaking/renaming field
-// changes. Schema 1.0 only *added* the "schema_version" (and legacy
-// "version") field on top of the unversioned pre-E4 (0,0) baseline; every
-// title/element field has always been purely additive, and absent fields
-// already degrade safely via `j.value(key, default)` at the call sites
-// below. So the step below is a deliberate, documented no-op — it exists to
-// pin down the call site, ordering, and extension pattern for the day a
-// real migration (a field rename/restructure/removal) is actually needed.
-// Do NOT use this scaffold to drop or alter real field data.
+// The (0,0) step is a deliberate no-op: schema 1.0 only *added* the
+// "schema_version" (and legacy "version") field on top of the unversioned
+// pre-E4 baseline, and absent fields already degrade safely via
+// `j.value(key, default)` at the call sites below. The (1,0) step is the
+// first real one — see its comment.
 struct SchemaMigrationStep {
     int major;
     int minor;
@@ -821,6 +847,20 @@ static const std::vector<SchemaMigrationStep>& MigrationRegistry()
         {0, 0, [](json& /*j*/) {
             // Intentional no-op: no field was renamed/removed going into
             // schema 1.0, so there is nothing to migrate here today.
+        }},
+        // (1,0) -> (1,1): "id" changed meaning. It used to hold the
+        // human-readable name ("lower_third"); it now holds the title's
+        // generated uuid, and the name moved to "name". Detect a pre-1.1
+        // file by the shape of "id" — anything that isn't a v4 uuid is a
+        // legacy name — so this stays correct even if the step is somehow
+        // applied twice.
+        {1, 0, [](json& j) {
+            const bool legacyId = j.contains("id") && j["id"].is_string() &&
+                                  !uuid::IsV4(j["id"].get<std::string>());
+            if (legacyId && !j.contains("name"))
+                j["name"] = j["id"];
+            if (legacyId || !j.contains("id") || !j["id"].is_string())
+                j["id"] = uuid::GenerateV4();
         }},
         // Extension point: when a future schema bump introduces a real
         // breaking change, add a new ordered step here. `j` is the WHOLE
@@ -994,7 +1034,12 @@ Title Title::Load(const std::string& ogtPath)
 
     Title title;
     title.m_loadDiagnostic = diag;
+    // Pre-1.1 files are normalized by the migration step above, so "id" is a
+    // uuid and "name" the human name by the time we get here. The fallback
+    // still guards a hand-edited/blank id.
     title.id       = j.value("id", "");
+    if (title.id.empty()) title.id = uuid::GenerateV4();
+    title.name     = j.value("name", "");
     title.width    = j.value("width", 1920);
     title.height   = j.value("height", 1080);
     title.metadata = j.value("metadata", nlohmann::json::object());
@@ -1005,7 +1050,7 @@ Title Title::Load(const std::string& ogtPath)
     // Keep in sync with the reads above. Anything else — e.g. a newer
     // plugin's field — is preserved in title.extra for round-tripping.
     static const std::unordered_set<std::string> kKnownTitleKeys = {
-        "id", "version", "schema_version", "width", "height", "metadata", "elements",
+        "id", "name", "version", "schema_version", "width", "height", "metadata", "elements",
     };
     for (const auto& [k, v] : j.items()) {
         if (!kKnownTitleKeys.count(k))
@@ -1105,7 +1150,8 @@ void Title::Save(const std::string& ogtPath) const
 
     // Build title.json
     json j;
-    j["id"] = id;
+    j["id"]   = id;    // uuid since schema 1.1 (pre-1.1 files stored the name here)
+    j["name"] = name;
     // Dual-write the schema version: "schema_version" (major/minor object) is
     // preferred by new readers, while "version" (legacy major-only int) keeps
     // older E4-era readers, which only know that field, working.

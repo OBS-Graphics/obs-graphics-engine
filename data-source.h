@@ -3,72 +3,85 @@
 
 #pragma once
 
-#include <atomic>
-#include <memory>
+#include "uuid.h"
+
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 using Record = std::unordered_map<std::string, std::string>;
 
-// A source of records that `DataPool` (data-pool.h) polls and hands out to
-// any number of `Title`s bound to it. A source knows nothing about which
-// Title(s) consume it, nor even how many there are — that mapping (and its
-// lifetime) is owned entirely by DataPool. This is what lets several Titles
-// safely share one instance instead of each needing its own copy (e.g. a
-// weather feed backing both a corner ticker and a full-screen graphic).
+// What a data source knows of a Title: its identity, and nothing else. A
+// source never sees a Title object — Scene (scene.h) publishes this directory
+// into every source once per tick (IDataSource::SetTitleDirectory), and hands
+// one back on every NotifyTriggerIn/NotifyTriggerOut. `id` is the Title's
+// uuid (unique within a Scene, which is what a script targets with
+// trigger_out); `name` is the human-readable name, which may be shared by
+// several Titles — hence the script-side lookup returning a list.
+struct TitleRef {
+    std::string id;
+    std::string name;
+
+    bool operator==(const TitleRef& o) const { return id == o.id && name == o.name; }
+    bool operator!=(const TitleRef& o) const { return !(*this == o); }
+};
+
+// A source of records that `DataPool` (data-pool.h) owns, polls, and caches.
+// A source knows nothing about which Title(s) consume it, nor how many there
+// are — Titles pull the pool's cache themselves by source id, which is what
+// lets several Titles share one instance (e.g. a weather feed backing both a
+// corner ticker and a full-screen graphic) with no per-Title state here.
 struct IDataSource {
     virtual ~IDataSource() = default;
+
+    // Stable identity, generated at construction. This is what a Title stores
+    // in `Title::dataSourceId` and what DataPool keys its registry by.
+    // SetId() exists so a host can restore an id it persisted with its own
+    // project/collection settings; changing it while the source is registered
+    // with a DataPool does NOT re-key the pool (Remove/Add for that).
+    const std::string& GetId() const { return m_id; }
+    void SetId(std::string id) { m_id = std::move(id); }
+
     virtual std::vector<Record> GetData() const = 0;
     virtual std::string GetFilePath() const = 0;
 
     // Like GetData(), but for sources that fetch asynchronously (e.g. a
     // worker-thread-backed ScriptDataSource), waits for a fresh fetch to
     // complete (bounded) instead of returning whatever's currently cached.
-    // Used only for the Hidden-triggered instant-apply path (the caller
-    // fetches via this before calling Title::TriggerIn with the records),
-    // where showing stale/blank data on first appearance would be wrong.
-    // Synchronous sources (file-backed) are already always fresh, so the
-    // default just delegates to GetData().
+    // Used by DataPool::DataBlocking(), which Title::TriggerIn calls when
+    // showing a Hidden title — where stale/blank data on first appearance
+    // would be wrong. Synchronous sources (file-backed) are already always
+    // fresh, so the default just delegates to GetData().
     virtual std::vector<Record> GetDataBlocking() const { return GetData(); }
 
     // Per-tick housekeeping hook, called by DataPool::Tick on every source
-    // every frame regardless of any binding's Title state (mirrors the old
-    // per-Title unconditional call this replaces). Default: nothing to do.
-    // Must not block. Note this no longer *applies* anything itself (e.g. a
-    // script's own trigger_out()) — see DrainOutTriggerRequests(), which is
-    // what a caller (DataPool) actually applies.
+    // every frame. Default: nothing to do. Must not block.
     virtual void PumpEvents() const {}
 
-    // Drains script-originated trigger_out(...) requests accumulated since
-    // the last drain (DataPool::Tick calls this once per source per tick).
-    // Each returned string is a *bind name* (see DataPool::Bind) identifying
-    // one bound title to hide; the empty-string sentinel means "every title
-    // currently bound to this source" (Lua's bare trigger_out()). Default:
-    // nothing to drain — only ScriptDataSource produces these.
+    // Drains script-originated trigger_out(...) requests accumulated since the
+    // last drain (DataPool::Tick collects these once per source per tick and
+    // Scene::Tick applies them). Each returned string is a *Title uuid*; the
+    // empty-string sentinel means "every title reading this source" (Lua's
+    // bare trigger_out()). Default: nothing to drain — only ScriptDataSource
+    // produces these.
     virtual std::vector<std::string> DrainOutTriggerRequests() { return {}; }
 
-    // Called by DataPool once per binding, whenever that binding's Title
-    // fires onTriggerIn/onTriggerOut — from any origin (a host call, the
-    // `duration` timeout, or this same source's own trigger_out()).
-    // `bindName` identifies which binding fired, since one source can be
-    // bound to many titles at once. Default: no-op — only sources that care
-    // about a title's show/hide (e.g. ScriptDataSource, to relay into
-    // _on_trigger_in(titleId, ...)/_on_trigger_out(titleId)) need to
-    // override these.
-    virtual void NotifyTriggerIn(const std::string& bindName, size_t recordIndex, double duration) {}
-    virtual void NotifyTriggerOut(const std::string& bindName) {}
+    // Called once per showing/hiding of a Title that reads this source, from
+    // any origin (a host call, the `duration` timeout, or this same source's
+    // own trigger_out()). Default: no-op — only sources that care about a
+    // title's show/hide (e.g. ScriptDataSource, relaying into
+    // _on_trigger_in(title, ...)/_on_trigger_out(title)) override these.
+    virtual void NotifyTriggerIn(const TitleRef& title, size_t recordIndex, double duration) {}
+    virtual void NotifyTriggerOut(const TitleRef& title) {}
 
-    // Optional liveness token. DataPool::Bind installs a callback on the
-    // bound Title that calls back into this source (NotifyTriggerIn/Out);
-    // DataPool guarantees it unbinds (and neutralizes that callback) before
-    // ever destroying a source, but a source that has its own good reason to
-    // distrust that ordering (or simply wants a second, source-owned
-    // guarantee) can hand back a shared flag it flips to false at the very
-    // start of its own destructor — DataPool checks it, when present, before
-    // every NotifyTriggerIn/Out call. Default: none; DataPool's own
-    // bookkeeping is sufficient for synchronous sources.
-    virtual std::shared_ptr<const std::atomic<bool>> AliveToken() const { return nullptr; }
+    // Every Title in the Scene this source belongs to, pushed down by
+    // Scene::Tick whenever the set changes. This is what backs the Lua
+    // `scene.find_titles(name)`/`scene.titles()` lookups — a source that
+    // exposes no script surface has nothing to do with it. Default: no-op.
+    virtual void SetTitleDirectory(std::vector<TitleRef> titles) {}
+
+private:
+    std::string m_id{uuid::GenerateV4()};
 };
 
 struct JsonFileDataSource : public IDataSource {

@@ -18,6 +18,30 @@ namespace {
 // calls (each individually within its own budget) can legitimately take
 // longer than any one of them.
 constexpr std::chrono::seconds kInstantFetchTimeout{30};
+
+// Resolves whatever Lua passed to trigger_out(...) into a Title uuid:
+//  - nil / no argument  -> "" (the "every title reading this source" sentinel)
+//  - a `{id=, name=}` handle from scene.find_titles/scene.titles -> its id
+//  - a raw uuid string  -> itself
+// Anything else (or a table with no string `id`) yields no value, so the
+// caller can complain instead of silently hiding every title on the source.
+std::optional<std::string> TitleIdFromLua(const sol::object& title)
+{
+    switch (title.get_type()) {
+        case sol::type::none:
+        case sol::type::lua_nil:
+            return std::string();
+        case sol::type::string:
+            return title.as<std::string>();
+        case sol::type::table: {
+            sol::optional<std::string> id = title.as<sol::table>()["id"];
+            if (id) return *id;
+            return std::nullopt;
+        }
+        default:
+            return std::nullopt;
+    }
+}
 }  // namespace
 
 ScriptDataSource::ScriptDataSource(const std::string& path)
@@ -28,12 +52,6 @@ ScriptDataSource::ScriptDataSource(const std::string& path)
 
 ScriptDataSource::~ScriptDataSource()
 {
-    // Neutralize any DataPool-held onTriggerIn/onTriggerOut lambda (see
-    // AliveToken()) immediately, before signaling/joining, so a callback
-    // firing mid-teardown is a guaranteed-safe no-op rather than a
-    // use-after-free.
-    m_alive->store(false, std::memory_order_release);
-
     m_stopRequested.store(true, std::memory_order_release);
     m_jobCv.notify_all();
     if (m_worker.joinable())
@@ -64,9 +82,31 @@ void ScriptDataSource::WorkerMain()
         m_onTriggerIn = L["_on_trigger_in"];
         m_onTriggerOut = L["_on_trigger_out"];
 
-        L.set_function("trigger_out", [this](sol::optional<std::string> titleId) {
-            TriggerOut(titleId.value_or(std::string()));
+        // Registered after safe_script_file, so these are callable from
+        // _get_data/_on_trigger_* but not at script load time.
+        L.set_function("trigger_out", [this](sol::object title) {
+            if (auto id = TitleIdFromLua(title)) {
+                TriggerOut(*id);
+                return;
+            }
+            std::cerr << "trigger_out: expected a title handle (from scene.find_titles), "
+                         "a title id string, or no argument" << std::endl;
         });
+
+        sol::table sceneTable = L.create_table();
+        sceneTable.set_function("titles", [this]() {
+            sol::table out = L.create_table();
+            for (const TitleRef& t : TitleDirectory())
+                out.add(MakeTitleHandle(t));
+            return out;
+        });
+        sceneTable.set_function("find_titles", [this](const std::string& name) {
+            sol::table out = L.create_table();
+            for (const TitleRef& t : TitleDirectory())
+                if (t.name == name) out.add(MakeTitleHandle(t));
+            return out;
+        });
+        L["scene"] = sceneTable;
 
         sol::optional<double> interval = L["_poll_interval"];
         m_pollInterval = interval.value_or(0.25);
@@ -104,13 +144,13 @@ void ScriptDataSource::WorkerMain()
         bool fetchRequested = false;
         for (auto& job : jobs) {
             if (job.kind == TriggerRequest::Kind::In && m_onTriggerIn.valid()) {
-                auto r = m_onTriggerIn(job.bindName, job.recordIndex, job.duration);
+                auto r = m_onTriggerIn(MakeTitleHandle(job.title), job.recordIndex, job.duration);
                 if (!r.valid()) {
                     sol::error e = r;
                     std::cerr << e.what() << std::endl;
                 }
             } else if (job.kind == TriggerRequest::Kind::Out && m_onTriggerOut.valid()) {
-                auto r = m_onTriggerOut(job.bindName);
+                auto r = m_onTriggerOut(MakeTitleHandle(job.title));
                 if (!r.valid()) {
                     sol::error e = r;
                     std::cerr << e.what() << std::endl;
@@ -208,7 +248,7 @@ std::vector<Record> ScriptDataSource::GetDataBlocking() const
     uint64_t startGen = m_dataGeneration;
     lock.unlock();
 
-    EnqueueTriggerJob({TriggerRequest::Kind::FetchRequest, "", 0, -1.0});
+    EnqueueTriggerJob({TriggerRequest::Kind::FetchRequest, TitleRef{}, 0, -1.0});
 
     lock.lock();
     m_dataCv.wait_for(lock, kInstantFetchTimeout, [&] {
@@ -240,18 +280,35 @@ std::vector<std::string> ScriptDataSource::DrainOutTriggerRequests()
     return drained;
 }
 
-void ScriptDataSource::NotifyTriggerIn(const std::string& bindName, size_t recordIndex, double duration)
+void ScriptDataSource::NotifyTriggerIn(const TitleRef& title, size_t recordIndex, double duration)
 {
-    EnqueueTriggerJob({TriggerRequest::Kind::In, bindName, recordIndex, duration});
+    EnqueueTriggerJob({TriggerRequest::Kind::In, title, recordIndex, duration});
 }
 
-void ScriptDataSource::NotifyTriggerOut(const std::string& bindName)
+void ScriptDataSource::NotifyTriggerOut(const TitleRef& title)
 {
-    EnqueueTriggerJob({TriggerRequest::Kind::Out, bindName, 0, -1.0});
+    EnqueueTriggerJob({TriggerRequest::Kind::Out, title, 0, -1.0});
 }
 
-void ScriptDataSource::TriggerOut(const std::string& bindName)
+void ScriptDataSource::TriggerOut(const std::string& titleId)
 {
     std::lock_guard<std::mutex> lock(m_outTriggerMutex);
-    m_pendingOutTriggers.push_back(bindName);
+    m_pendingOutTriggers.push_back(titleId);
+}
+
+void ScriptDataSource::SetTitleDirectory(std::vector<TitleRef> titles)
+{
+    std::lock_guard<std::mutex> lock(m_titleDirMutex);
+    m_titleDirectory = std::move(titles);
+}
+
+std::vector<TitleRef> ScriptDataSource::TitleDirectory() const
+{
+    std::lock_guard<std::mutex> lock(m_titleDirMutex);
+    return m_titleDirectory;
+}
+
+sol::table ScriptDataSource::MakeTitleHandle(const TitleRef& title)
+{
+    return L.create_table_with("id", title.id, "name", title.name);
 }

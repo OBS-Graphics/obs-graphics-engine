@@ -17,6 +17,7 @@ sol2/Lua, libcurl, and pugixml are only fetched and built when `ENABLE_LUA_SCRIP
 
 All sources live at repo root (no `src/` subdirectory):
 
+- `scene.h/cpp` — `Scene`: owns the open `Title`s plus their `DataPool`; ticks/renders them and is the world a Lua script sees — see the `Scene` entry below
 - `title.h/cpp` — `Title` struct: state machine, render, load/save `.ogt`
 - `element.h/cpp` — `IElement` base class (parent/child tree management)
 - `spatial.h/cpp` — `Spatial : IElement` — adds bounds, rotation, shear, world-position tracking
@@ -28,8 +29,9 @@ All sources live at repo root (no `src/` subdirectory):
 - `render_util.h/cpp` — `namespace render`: `RoundRect`, `LoadImageSurface`, `RenderDropShadow`, `RenderDropShadowFromSurface` (box-blur shadow pipeline; both accept an optional `Transform`)
 - `animation.h/cpp` — `AnimationDef`, `AnimatedTransform`, easing functions
 - `types.hpp` — `Paint`, `Point`, `Size`, `Rectangle`, `Transform`, `ScaleMode` — core shared types
-- `data-source.h/cpp` — `IDataSource`, JSON/CSV data source implementations
-- `data-pool.h/cpp` — `DataPool`: owns every `IDataSource`, polls each once per tick, and pushes cached records into every `Title` bound to it — see the `DataPool` entry below
+- `data-source.h/cpp` — `IDataSource` (+ `TitleRef`), JSON/CSV data source implementations
+- `data-pool.h/cpp` — `DataPool`: owns every `IDataSource`, polls each on a fixed cadence, and caches/versions the result — see the `DataPool` entry below
+- `uuid.h/cpp` — `uuid::GenerateV4()` / `uuid::IsV4()`; the identity of both `IDataSource` and `Title`
 - `script.h/cpp` — `ScriptDataSource` (Lua via sol2); compiled only when `ENABLE_LUA_SCRIPTING=ON` (default)
 - `lua_http.h/cpp` — `http` Lua global table (libcurl); Lua-only, same CMake gate as `script.cpp`
 - `lua_json.h/cpp` — `json` Lua global table (nlohmann/json); Lua-only, same gate
@@ -73,19 +75,32 @@ IElement          (element.h)     — id, parent/child tree, virtual Render/Appl
 - `RenderDropShadow(ctx, sx, sy, sw, sh, blur, r, g, b, a, cornerR, transform={})` — 3× separable box-blur (≈Gaussian) of a rounded-rect shape on an A8 surface, composited as a coloured shadow via `cairo_mask_surface()`. O(pixels) regardless of blur radius. When `transform` is non-identity the A8 surface is sized to contain the transformed shape and the shear/rotation is applied inside the A8 draw step.
 - `RenderDropShadowFromSurface(ctx, srcA8, destX, destY, blur, r, g, b, a, transform={})` — same blur pipeline but takes a pre-rendered A8 surface as the shadow shape. When `transform` is identity uses a fast `memcpy` path; otherwise applies the transform when copying into the padded A8. Used by `TextElement` to cast text-shaped shadows.
 
-**`Title`** — Standalone presentation unit. Holds `width`/`height`, `metadata` (arbitrary JSON), an elements vector (root at [0], VisualElements at [1..]), and a state machine: `Hidden → AnimatingIn → Visible → AnimatingOut → Hidden`. `Tick(dt)` advances the animation timer and, while Visible, calls `TickData(dt)` on each VisualElement to drive per-element data-change animations. `Render(cr)` draws direct children of root sorted by `zOrder`. Loads/saves as `.ogt` (zip archive, see below).
+**`Title`** — Standalone presentation unit. Holds `id` (a generated uuid — see below), `name` (human-readable), `width`/`height`, `metadata` (arbitrary JSON), an elements vector (root at [0], VisualElements at [1..]), and a state machine: `Hidden → AnimatingIn → Visible → AnimatingOut → Hidden`. `Tick(dt)` advances the animation timer and, while Visible, pulls fresh data (below) and calls `TickData(dt)` on each VisualElement to drive per-element data-change animations. `Render(cr)` draws direct children of root sorted by `zOrder`. Loads/saves as `.ogt` (zip archive, see below).
 
-`Title` holds no data-source pointer and never fetches anything itself — it is a pure consumer of whatever records a caller hands it (see `DataPool` below). `TriggerIn(recordIndex, duration, records)` / `TriggerOut()` drive the state machine and are the single choke point for every trigger origin — a direct host call, the `duration` timeout below, or a script's `trigger_out()` (see Lua scripting). If `records` is non-empty, `TriggerIn` applies it instantly (`SetContentInstant`) before the `AnimatingIn` transition starts — the caller (typically `DataPool::DataBlocking`) is responsible for fetching fresh data first when triggering in from `Hidden`, where showing stale/blank data on first appearance would be wrong. `UpdateData(records, instant)` is the lower-level apply step both `TriggerIn` and `DataPool::Tick` funnel through: it indexes `records[dataRecordIndex % records.size()]` and applies each field to the matching element by id (`SetContentInstant` if `instant`, else the animated `SetContent`), silently ignoring ids with no matching element. Both `TriggerIn`/`TriggerOut` fire every subscriber in `onTriggerIn`/`onTriggerOut` (`std::vector<std::function<...>>` — multiple listeners, e.g. a host UI and a `DataPool` binding, can coexist without clobbering each other).
+**Two identities** — `id` is a `uuid::GenerateV4()` value, unique within a `Scene` (`Scene::AddTitle` reassigns a duplicate, which happens when the same `.ogt` is opened twice since ids round-trip through the file) and is what a Lua script targets. `name` is the operator-facing name, free to collide — which is why `Scene::FindByName` returns a list. Pre-1.1 `.ogt` files stored the *name* in the `"id"` key; the schema migration moves it (see Schema versioning).
 
-`duration` (seconds, default `-1.0` = no auto-hide) is passed to `TriggerIn` and, while `Visible`, `Tick` auto-fires `TriggerOut()` once that much Visible-time has elapsed — a "timed title." The periodic 0.25s data refresh that used to live in `Title::Tick` now lives in `DataPool::Tick`, gated on `TitleState::Visible` there instead.
+**Data** — a `Title` reads at most one data source, named by `dataSourceId` (an `IDataSource::GetId()`) and read out of `dataPool` (set by `Scene::AddTitle`). It pulls; nothing pushes into it:
+- `UpdateData()` asks `DataPool::DataIfChanged` and applies the records with the animated `SetContent` **only** when that source's cache version moved. `Title::Tick` calls it every frame while `Visible` — an unchanged cache costs one integer compare, which is why there is no per-title poll timer anymore.
+- `TriggerIn(recordIndex, duration)` fetches through `DataPool::DataBlocking` (bounded, but it *can* block) and applies the result instantly (`SetContentInstant`) before the `AnimatingIn` transition — showing stale or blank data on first appearance would be worse.
+- `UpdateData(records, instant)` is the lower-level apply step both funnel through: it indexes `records[dataRecordIndex % records.size()]` and applies each field to the matching element by id, silently ignoring ids with no matching element.
+- `TriggerIn`/`TriggerOut` fire every subscriber in `onTriggerIn`/`onTriggerOut` (`std::vector<std::function<...>>` — several host listeners can coexist) and relay into the source via `DataPool::NotifyTriggerIn`/`NotifyTriggerOut`, so a script hears about every show/hide regardless of origin.
+
+`duration` (seconds, default `-1.0` = no auto-hide) is passed to `TriggerIn` and, while `Visible`, `Tick` auto-fires `TriggerOut()` once that much Visible-time has elapsed — a "timed title."
 
 **`AnimationDef` / `AnimatedTransform`** — In/out animation per element. `animation::EvaluateAnimation(def, t, isOut, width, height)` returns an `AnimatedTransform` (offset, scale, opacity, clip rect). Out animations are true reversals. Per-element data-change animations are stored in `dataInAnimation`/`dataOutAnimation` and driven by `VisualElement::TickData`.
 
-**`IDataSource`** (`data-source.h`) — Interface for a source of `Record`s (`Record = unordered_map<string,string>`). Pure virtual `GetData() -> std::vector<Record>` and `GetFilePath()`. A source knows nothing about any `Title` — that mapping belongs entirely to `DataPool` (below), which is what lets several Titles share one instance. `PumpEvents()` is a per-tick housekeeping no-op hook; `DrainOutTriggerRequests()` returns bind names a script asked to hide via `trigger_out(...)` since the last drain (empty-string sentinel = "every title bound to this source"); `NotifyTriggerIn`/`NotifyTriggerOut(bindName, ...)` are called by `DataPool` whenever a bound Title's `onTriggerIn`/`onTriggerOut` fires, so `ScriptDataSource` can relay into `_on_trigger_in`/`_on_trigger_out`. All three are no-ops by default — only `ScriptDataSource` overrides them.
+**`IDataSource`** (`data-source.h`) — Interface for a source of `Record`s (`Record = unordered_map<string,string>`). Carries a uuid generated at construction (`GetId()`/`SetId()` — the setter is for restoring a host-persisted id), which is what `DataPool` keys by and what a `Title` stores in `dataSourceId`. Pure virtual `GetData() -> std::vector<Record>` and `GetFilePath()`; `GetDataBlocking()` defaults to `GetData()`. A source knows nothing about any `Title`, only `TitleRef{id, name}` copies handed to it. The optional hooks — all no-ops by default, only `ScriptDataSource` overrides them: `PumpEvents()` (per-tick housekeeping), `DrainOutTriggerRequests()` (Title uuids a script asked to hide via `trigger_out(...)`; empty-string sentinel = "every title reading this source"), `NotifyTriggerIn`/`NotifyTriggerOut(TitleRef, ...)`, and `SetTitleDirectory(std::vector<TitleRef>)` (the Scene's titles, for `scene.find_titles`).
 
-**`DataPool`** (`data-pool.h`) — Owns every `IDataSource` a host registers (`Add(key, source)`/`Remove(key)`), polls each once per tick, and pushes freshly-fetched records into every `Title` bound to it (`Bind(title, key, bindName, titleLock)`/`Unbind(title)`). This is what lets several Titles share one data source — e.g. a weather feed backing both a corner ticker and a full-screen graphic — without the old single-owner `SetOwner` ping-pong (a `Title` binding/re-binding a source on every poll used to reassign a single owning pointer and re-append duplicate trigger callbacks each time). `bindName` is the identity a Lua script sees and can target via `trigger_out(bindName)`/`_on_trigger_in(bindName, ...)`/`_on_trigger_out(bindName)` — deliberately **not** `Title::id`, which comes straight from the loaded `.ogt` file and can collide (two open instances of the same file) or be empty. `Data(key)` reads the last cache (never blocks); `DataBlocking(key)` forces a fresh fetch and is the replacement for the old `TriggerIn`-from-`Hidden`-blocks behavior — the caller fetches via this *before* calling `Title::TriggerIn` with the result. `Tick(dt)` runs, in order: (a) pump + drain every source's `trigger_out(...)` requests and map them back to bound Titles via `TriggerOut()`; (b) refresh each source's cache on the fixed 0.25s cadence (reusing the same prev-slot/curr-slot technique `Title::Tick` used to run per-title), gated on at least one bound Title being `Visible`; (c) push refreshed records into every `Visible` binding via `UpdateData(records, /*instant=*/false)`.
+**`DataPool`** (`data-pool.h`) — Owns every `IDataSource` (`Add(source)` → returns its id / `Remove(id)` / `Clear()`), polls each on a fixed 0.25s cadence, and caches the result. That is the whole job: it never includes `title.h`, never holds a `Title*`, and never pushes anything into one. `Add` primes the cache with one synchronous fetch (so a host UI can preview a just-registered source), and the poll is unconditional — the pool has no idea what is on screen.
+- **The changed flag** — each cache carries a `version`, bumped only when a refresh produced records that differ from what was cached (`0` = never successfully fetched). `Data(id)` / `DataVersion(id)` / `DataIfChanged(id, version&, out&)` are the read API; `DataIfChanged` compares versions for *inequality*, so a source removed and re-added (version restarting at 1) still reads as changed.
+- `DataBlocking(id)` forces a fresh fetch. It copies out the raw `IDataSource*` under the mutex, **releases it**, and only then fetches — so a slow (seconds, for a network-backed script) fetch never stalls `Tick()`/`Add()`/`Remove()` on another thread.
+- Source-facing relays, so nothing outside the pool handles a raw source pointer: `NotifyTriggerIn`/`NotifyTriggerOut(sourceId, TitleRef, ...)` (called by `Title`), `PublishTitleDirectory(titles)` and `DrainOutTriggerRequests()` → `{sourceId, titleUuids}` (called by `Scene`).
+- A throwing `GetData()` (a file source on a missing/malformed file) is caught in `Tick`/`Add`/`DataBlocking`: `Tick` runs on the render thread called from C code (libobs), where an escaping exception is `std::terminate`. On failure the previous cache is kept, never clobbered with `{}`, and the failure/recovery is logged once at the edge rather than every 0.25s.
+- Removed/replaced sources are destroyed only **after** the mutex is released — `~ScriptDataSource` joins a worker thread that can block for seconds.
 
-**Locking discipline** — Lock order is strictly `DataPool`'s own mutex → a bound Title's lock (when the host supplies one via `Bind`'s `titleLock`), never the reverse. `DataBlocking()` is the one path that must not nest them: it copies out the raw `IDataSource*` while holding the pool mutex, releases it, then calls the (potentially slow) `GetDataBlocking()` — so a slow fetch never blocks `Tick()`/`Add()`/`Remove()`/`Bind()` on another thread.
+**`Scene`** (`scene.h`) — Owns the open `Title`s (`AddTitle`/`RemoveTitle`/`Clear`/`Titles`) plus the `DataPool` behind them (`Pool()`), and is the only place that knows both halves. `AddTitle` points the Title at the pool and guarantees id uniqueness. `FindByName(name)` returns every match; `FindById(uuid)` is exact. `Tick(dt)` runs, in order: (a) `DataPool::Tick`; (b) republish the `{id, name}` directory into every source, but only when it changed since the last publish; (c) drain script-originated `trigger_out(...)` requests and apply them — a uuid hits that Title (any Title in the scene, not just one reading that source), the empty-string sentinel hits every Title reading *that* source; deduplicated within one drain and skipped for a Title already `Hidden`/`AnimatingOut`, so a doubled request can't replay an out-animation or double-relay `_on_trigger_out`; (d) `Title::Tick` on every Title. `Render(cr[, outW, outH])` draws non-`Hidden` Titles ordered by `Title::zOrder`. Persistence is deliberately the host's job — there is no `Scene::Save`/`Load`; the host rebuilds a Scene by adding sources first, then Titles carrying the matching `dataSourceId`.
+
+**Threading** — a `Scene` and its `Title`s are single-threaded: `Scene::Tick`/`Render`/`AddTitle`/`RemoveTitle` and any direct `Title` call belong to the same (host render) thread. `DataPool`'s mutex protects only its own registry and caches, so a host UI thread may still `Add`/`Remove` sources; the two paths that must never hold it across a slow call — `DataBlocking()`'s fetch and source destruction — are documented above.
 
 ## .ogt file format
 
@@ -112,7 +127,10 @@ On `Title::Save`: all referenced asset files (whether `@`-prefixed or local path
 
 ```json
 {
-  "id": "lower_third",
+  "schema_version": { "major": 1, "minor": 1 },
+  "version": 1,
+  "id": "9f2c41e8-3b7a-4c1d-8e55-1a2b3c4d5e6f",
+  "name": "lower_third",
   "width": 1920,
   "height": 1080,
   "metadata": { "editor_zoom": 1.5, "custom_key": "value" },
@@ -123,6 +141,8 @@ On `Title::Save`: all referenced asset files (whether `@`-prefixed or local path
   ]
 }
 ```
+
+The title-level `"id"` is the Title's uuid and `"name"` its human-readable name (since schema 1.1 — before that, `"id"` held the name). Element-level `"id"` is unchanged: the plain element id data records are matched against. The title↔data-source mapping is **not** serialized; the host owns it.
 
 The root element (`"__root"`) is **not** serialized. Elements without a `parent` field are automatically parented to root on load. The `metadata` object is omitted when empty.
 
@@ -157,7 +177,7 @@ The root element (`"__root"`) is **not** serialized. Elements without a `parent`
 `.ogt` files carry a schema version so a plugin/editor can safely open a file written
 by a *different* version of the engine. The policy lives in `title.cpp`.
 
-**Version constants** — `kOgtSchemaMajor` / `kOgtSchemaMinor` (currently **1.0**).
+**Version constants** — `kOgtSchemaMajor` / `kOgtSchemaMinor` (currently **1.1**).
 - `Save` writes `"schema_version": { "major": M, "minor": m }` and also a legacy
   `"version": M` int for readers that predate the major/minor split.
 - `Load` reads `schema_version` when present, else falls back to the legacy `version`
@@ -192,10 +212,21 @@ round-trips the rest untouched.
 
 **Migration hooks** — `MigrateTitleJson(json&, fromMajor, fromMinor)` runs in `Load`
 between parse and field extraction, driven by an ordered migration registry (each step
-transforms the JSON in place from one version to the next). The only current step is the
-`{0,0}` legacy/absent-version normalization → current shape. To add a migration: append a
-step keyed by the source version that walks the JSON (recursing into `elements` and their
-children for element-field changes) and rewrites it to the next version's shape.
+transforms the JSON in place from one version to the next). Current steps:
+- `{0,0}` — legacy/absent-version normalization → 1.0 shape. A documented no-op (1.0 was
+  purely additive over the unversioned baseline).
+- `{1,0} → {1,1}` — the title-level `"id"` changed meaning: it used to hold the
+  human-readable name, and now holds the Title's uuid. The step detects a pre-1.1 file by
+  the *shape* of `"id"` (anything that isn't a v4 uuid is a legacy name), moves it to
+  `"name"`, and generates a uuid — so it stays correct even if applied twice.
+
+To add a migration: append a step keyed by the source version that walks the JSON
+(recursing into `elements` and their children for element-field changes) and rewrites it
+to the next version's shape.
+
+Note the 1.1 wart: a 1.0-era reader opening a 1.1 file shows the uuid where it used to
+show the name. That's cosmetic — unknown-field preservation means `"name"` still
+round-trips untouched.
 
 **Load diagnostic** — instead of printing to `stderr`, `Load` records a
 `Title::LoadDiagnostic { Severity{None,Info,Warning}, message }`, readable via
@@ -206,27 +237,43 @@ was created with a newer schema version.
 
 Built only when the CMake option `ENABLE_LUA_SCRIPTING` (default `ON`) is enabled; when disabled, `script.h/cpp` are excluded from the `engine` target and Lua/sol2 are never fetched. `engine` publicly defines `ENGINE_HAS_LUA_SCRIPTING` only when the feature is built, so a consumer can guard any conditional `#include "engine/script.h"` with `#ifdef ENGINE_HAS_LUA_SCRIPTING`.
 
-`ScriptDataSource` (`script.h/cpp`) runs a Lua 5.4 script (via sol2) as an `IDataSource`. It knows nothing about any `Title` — only about `DataPool`'s `bindName`, called `titleId` from the script's point of view since that's the only "which title" identity a script ever sees. Contract, all optional except `_get_data`:
+`ScriptDataSource` (`script.h/cpp`) runs a Lua 5.4 script (via sol2) as an `IDataSource`. It never sees a `Title` object — only `TitleRef{id, name}` copies, which surface in Lua as a **title handle**: a plain table `{ id = "<uuid>", name = "<name>" }`. Contract, all optional except `_get_data`:
 
 | Lua global | Direction | Called |
 |---|---|---|
-| `_get_data()` | script → engine | Every `GetData()` pull (instant fetch via `DataPool::DataBlocking`, or the 0.25s Visible-gated poll in `DataPool::Tick`). Must return a table of record-tables (string/number/bool values, converted to strings). |
-| `_on_trigger_in(titleId, recordIndex, duration)` / `_on_trigger_out(titleId)` | engine → script | Whenever a bound `Title` is triggered in/out, from **any** origin (host call, `duration` timeout, or this script's own `trigger_out`) — wired up in `DataPool::Bind` as a subscriber on that `Title`'s `onTriggerIn`/`onTriggerOut`, exactly like a host UI listener would be. `titleId` is the `bindName` that binding was made with, so a script bound to several titles can tell them apart. |
-| `trigger_out(titleId)` | script → engine | Bound into the Lua globals on the worker thread, **after** `safe_script_file` — so it is callable from `_get_data`/`_on_trigger_*`, but *not* at script load time. Queues `titleId` (or the empty-string sentinel for the bare `trigger_out()` form, meaning "every title bound to this source") in a mutex-guarded list that `DataPool::Tick` drains via `DrainOutTriggerRequests()` and applies as `TriggerOut()` on the matching bound `Title`(s), on the host thread. |
+| `_get_data()` | script → engine | Every `GetData()` pull (a blocking fetch via `DataPool::DataBlocking` when a Title is triggered in, or the 0.25s poll in `DataPool::Tick`). Must return a table of record-tables (string/number/bool values, converted to strings). |
+| `_on_trigger_in(title, recordIndex, duration)` / `_on_trigger_out(title)` | engine → script | Whenever a `Title` reading this source is triggered in/out, from **any** origin (host call, `duration` timeout, or this script's own `trigger_out`) — relayed by `Title::TriggerIn`/`TriggerOut` through `DataPool::NotifyTriggerIn`/`NotifyTriggerOut`. `title` is the handle, so a script feeding several titles can tell them apart by `title.id` (unique) or `title.name`. |
+| `trigger_out(title)` | script → engine | Accepts a handle (from `scene.find_titles`), a raw uuid string, or no argument at all — the bare `trigger_out()` form meaning "every title reading this source". Queues the uuid (or the empty-string sentinel) in a mutex-guarded list that `DataPool::Tick` exposes via `DrainOutTriggerRequests()` and `Scene::Tick` applies as `TriggerOut()` on the matching `Title`(s), on the host thread. A named handle can target **any** Title in the Scene, not just one reading this source. |
+
+`trigger_out` and the `scene` table are bound into the Lua globals on the worker thread **after** `safe_script_file` — so they are callable from `_get_data`/`_on_trigger_*`, but *not* at script load time.
 
 There is deliberately **no `trigger_in`** counterpart: whether a title is on-screen at all is the host's call, so a script asking to be *shown* isn't something the engine can honour meaningfully. Scripts still learn about every show through `_on_trigger_in`.
 
-These are two independent, one-directional channels — `_on_trigger_in`/`_on_trigger_out` do not imply `trigger_out` and vice versa. See `tests/test_script_trigger.cpp` for exercised examples of each, including two Titles bound to one `ScriptDataSource`.
+These are two independent, one-directional channels — `_on_trigger_in`/`_on_trigger_out` do not imply `trigger_out` and vice versa. See `tests/test_script_trigger.cpp` for exercised examples of each, including two Titles reading one `ScriptDataSource`.
 
 ### Injected Lua globals
 
-Three tables are registered on the `sol::state` in `ScriptDataSource::WorkerMain`, after `open_libraries()` and **before** `safe_script_file()`, so they are usable anywhere in the script rather than only inside `_get_data`:
+Three data tables are registered on the `sol::state` in `ScriptDataSource::WorkerMain`, after `open_libraries()` and **before** `safe_script_file()`, so they are usable anywhere in the script rather than only inside `_get_data`:
 
 | Table | File | Functions |
 |---|---|---|
 | `http` | `lua_http.h/cpp` | `get`, `post`, `put`, `patch`, `delete_` — blocking libcurl requests; each returns `{ok, status, body, error_msg, headers}`. Has a process-global `SetPermissionGate` hook. |
 | `json` | `lua_json.h/cpp` | `decode`, `encode`, `null`, `array` — over nlohmann/json |
 | `xml` | `lua_xml.h/cpp` | `decode`, `find`, `find_all` — over pugixml |
+
+A fourth, `scene`, is registered later (with `trigger_out`, after `safe_script_file`) because it reads engine state rather than being a pure function:
+
+| Table | Functions |
+|---|---|
+| `scene` | `find_titles(name)` → array of title handles with that name (may be empty or hold several — names aren't unique); `titles()` → every handle in the Scene |
+
+Both read a snapshot `Scene::Tick` publishes into the source via `IDataSource::SetTitleDirectory` (only when the directory actually changed), guarded by `m_titleDirMutex` — so the worker thread never touches a live `Title`:
+
+```lua
+for _, t in ipairs(scene.find_titles("ticker")) do
+    trigger_out(t)
+end
+```
 
 `json`/`xml` are pure functions over their arguments (no process-global state, no mutex, no permission gate) and return `nil, errmsg` on failure rather than raising, so a malformed payload is a branch in the script, not a script error.
 
