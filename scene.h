@@ -63,8 +63,10 @@ public:
 
     // One frame, in order:
     //  (a) DataPool::Tick — pump sources and refresh caches on their cadence;
-    //  (b) republish the {id, name} Title directory into every source, but
-    //      only when it changed since the last publish;
+    //  (b) hand the {id, name} Title directory to the pool, which works out
+    //      per source which sources are behind and need it — including one
+    //      registered after the directory last changed (see
+    //      DataPool::PublishTitleDirectory);
     //  (c) drain script-originated trigger_out(...) requests and apply them:
     //      a request naming a uuid hits that Title, the empty-string sentinel
     //      (Lua's bare trigger_out()) hits every Title reading that source.
@@ -85,7 +87,8 @@ private:
 
     DataPool m_pool;
     std::vector<std::unique_ptr<Title>> m_titles;
-    // Last directory pushed to the sources; kept so Tick only republishes on
-    // a real change instead of every frame.
-    std::vector<TitleRef> m_publishedDirectory;
+    // Scratch buffer Tick rebuilds the directory into each frame; a member
+    // purely so the rebuild reuses its capacity instead of allocating. Not
+    // state — the pool owns what was actually published to whom.
+    std::vector<TitleRef> m_directoryScratch;
 };

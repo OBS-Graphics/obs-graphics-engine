@@ -57,6 +57,21 @@ std::string DataPool::Add(std::unique_ptr<IDataSource> source)
         // can tell an empty-but-fetched cache from an unfetched one.
         entry.version = primed ? 1 : 0;
         entry.lastFetchFailed = !primed;
+
+        // Hand the newcomer the current Title directory right away instead of
+        // leaving it empty until the next PublishTitleDirectory. Matters for
+        // the Reload path (Add() over an existing id): the replacement's
+        // script worker starts polling immediately, and its first _get_data()
+        // may well call scene.titles(). This only shrinks that window — the
+        // worker is spawned in the ScriptDataSource constructor, i.e. before
+        // Add() is even called, so an empty directory on the very first poll
+        // stays possible by construction. Guarded on version 0 so a pool that
+        // has never published stays silent.
+        if (m_directoryVersion != 0) {
+            entry.source->SetTitleDirectory(m_titleDirectory);
+            entry.publishedDirVersion = m_directoryVersion;
+        }
+
         m_sources[id] = std::move(entry);
     }
     // `doomed` destructs here, after m_mutex has been released.
@@ -207,8 +222,19 @@ void DataPool::NotifyTriggerOut(const std::string& sourceId, const TitleRef& tit
 void DataPool::PublishTitleDirectory(const std::vector<TitleRef>& titles)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    for (auto& [id, entry] : m_sources)
-        entry.source->SetTitleDirectory(titles);
+
+    if (titles != m_titleDirectory) {
+        m_titleDirectory = titles;
+        ++m_directoryVersion;
+    }
+
+    // Per source, not per change: a source added since the last change is
+    // still at version 0 and gets caught up here. See the header.
+    for (auto& [id, entry] : m_sources) {
+        if (entry.publishedDirVersion == m_directoryVersion) continue;
+        entry.source->SetTitleDirectory(m_titleDirectory);
+        entry.publishedDirVersion = m_directoryVersion;
+    }
 }
 
 std::vector<std::pair<std::string, std::vector<std::string>>> DataPool::DrainOutTriggerRequests()

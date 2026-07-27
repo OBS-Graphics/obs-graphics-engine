@@ -94,6 +94,28 @@ void Title::TriggerIn(size_t recordIndex, double duration)
         m_lastDataVersion = dataPool->DataVersion(dataSourceId);
     }
 
+    EnterAnimatingIn(recordIndex, duration);
+}
+
+void Title::TriggerIn(size_t recordIndex, double duration, const std::vector<Record>& records)
+{
+    dataRecordIndex = recordIndex;
+
+    UpdateData(records, /*instant=*/true);
+
+    // Sync to whatever the cache is at now. The caller's own fetch already
+    // refreshed (and version-bumped) it, so without this the first Visible
+    // tick would read that bump as a change and re-apply the very same content
+    // through the *animated* SetContent — a visible re-animation of what the
+    // title is already showing. Non-blocking: DataVersion is a map lookup.
+    if (dataPool && !dataSourceId.empty())
+        m_lastDataVersion = dataPool->DataVersion(dataSourceId);
+
+    EnterAnimatingIn(recordIndex, duration);
+}
+
+void Title::EnterAnimatingIn(size_t recordIndex, double duration)
+{
     state = TitleState::AnimatingIn;
     timer = 0.0;
     this->duration = duration;

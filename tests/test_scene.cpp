@@ -12,8 +12,11 @@
 //    Hidden one doesn't, and an unchanged cache costs nothing.
 //  - TriggerIn from Hidden applies a *blocking* fresh fetch before animating
 //    in, and relays NotifyTriggerIn; TriggerOut relays NotifyTriggerOut.
-//  - Scene::Tick publishes the title directory into every source, but only
-//    when it actually changed.
+//  - The TriggerIn overload taking already-fetched records fetches nothing,
+//    relays the same notifications, and leaves the puller correctly versioned.
+//  - The title directory reaches every source that is behind it — including
+//    one added or replaced long after the directory last changed — without
+//    republishing to sources that are already current.
 //  - Script-originated trigger_out requests are dispatched by uuid and by the
 //    bare "every title on this source" sentinel, deduplicated within one
 //    drain, and skipped for a title already Hidden/AnimatingOut.
@@ -81,16 +84,28 @@ struct FakeSource : IDataSource {
     }
 };
 
+// A TextElement that counts how many times content was actually applied to it,
+// so a test can tell "applied once" from "applied, then redundantly reapplied".
+struct CountingText : TextElement {
+    int applies = 0;
+    void ApplyContent(const std::string& value) override
+    {
+        ++applies;
+        TextElement::ApplyContent(value);
+    }
+};
+
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 // A Title with one text element whose id matches the fake source's record key,
-// and animations short enough to step through quickly.
+// and animations short enough to step through quickly. The element is always a
+// CountingText, so a test that cares can static_cast the out-param.
 std::unique_ptr<Title> MakeTitle(const std::string& name, TextElement** outElement = nullptr)
 {
     auto title = std::make_unique<Title>();
     title->name = name;
 
-    auto el = std::make_unique<TextElement>();
+    auto el = std::make_unique<CountingText>();
     el->SetId("greeting");
     el->inAnimation  = {AnimationType::Fade, Easing::Linear, 0.05f, 0.00f};
     el->outAnimation = {AnimationType::Fade, Easing::Linear, 0.05f, 0.00f};
@@ -216,6 +231,62 @@ void TestTriggerInFetchesFreshAndRelays()
     Check(src->inCount == 1, "TriggerIn: a title with no dataSourceId relays nothing");
 }
 
+// The overload a host uses when it fetched the records itself, off whatever
+// thread its Scene lock would otherwise have frozen. It must do everything the
+// 2-arg form does EXCEPT the fetch.
+void TestTriggerInWithSuppliedRecords()
+{
+    Scene scene;
+    auto srcOwned = std::make_unique<FakeSource>();
+    FakeSource* src = srcOwned.get();
+    const std::string sourceId = scene.Pool().Add(std::move(srcOwned));
+
+    TextElement* el = nullptr;
+    Title* title = scene.AddTitle(MakeTitle("Lower Third", &el));
+    auto* counting = static_cast<CountingText*>(el);
+    title->dataSourceId = sourceId;
+
+    // What a host does: pull off-thread (this is the call that can take
+    // seconds), then hand the result to TriggerIn under its own lock.
+    src->value = "prefetched";
+    const std::vector<Record> records = scene.Pool().DataBlocking(sourceId);
+    const int blockingBefore = src->blockingCalls;
+
+    title->TriggerIn(0, 5.0, records);
+    Check(src->blockingCalls == blockingBefore,
+          "TriggerIn(records): performed no fetch of its own");
+    Check(el->text == "prefetched", "TriggerIn(records): applied the supplied records instantly");
+    Check(title->state == TitleState::AnimatingIn, "TriggerIn(records): entered AnimatingIn");
+    Check(title->duration == 5.0, "TriggerIn(records): took the duration");
+    Check(src->inCount == 1 && src->lastIn.id == title->id && src->lastIn.name == "Lower Third",
+          "TriggerIn(records): still relayed NotifyTriggerIn with this title's ref");
+
+    // The version sync: the caller's fetch bumped the cache version, so the
+    // first Visible tick must NOT read that bump as a change and re-apply.
+    const int appliesAfterTrigger = counting->applies;
+    RunUntilSettled(scene, *title);
+    Check(title->state == TitleState::Visible, "TriggerIn(records): reached Visible");
+    Check(counting->applies == appliesAfterTrigger,
+          "TriggerIn(records): an unchanged cache is not reapplied once Visible");
+
+    // ...but a genuinely new value still arrives, so the sync didn't wedge the
+    // puller at a stale version.
+    src->value = "later";
+    scene.Tick(kRefreshDt);
+    Check(el->text == "later", "TriggerIn(records): a later real change is still picked up");
+
+    // Empty records mean "the source returned nothing" — apply nothing, and
+    // above all don't fall back to a fetch.
+    TextElement* el2 = nullptr;
+    Title* other = scene.AddTitle(MakeTitle("Empty", &el2));
+    other->dataSourceId = sourceId;
+    const int blockingBefore2 = src->blockingCalls;
+    other->TriggerIn(0, -1.0, {});
+    Check(src->blockingCalls == blockingBefore2, "TriggerIn(records): empty records still fetch nothing");
+    Check(el2->text.empty(), "TriggerIn(records): empty records apply nothing");
+    Check(other->state == TitleState::AnimatingIn, "TriggerIn(records): empty records still show the title");
+}
+
 // ── Title directory ──────────────────────────────────────────────────────
 
 void TestDirectoryPublishedOnChangeOnly()
@@ -242,6 +313,50 @@ void TestDirectoryPublishedOnChangeOnly()
     scene.Tick(0.01f);
     Check(src->directoryPublishes == 3 && src->directory[0].name == "Renamed",
           "Directory: a rename republishes");
+}
+
+// The regression: publishing was gated on "did the directory change", which is
+// the wrong question. The right one is "is THIS source behind" — a source
+// registered after the last change never got a directory at all, so its
+// script's scene.titles()/find_titles() silently saw an empty scene forever.
+void TestDirectoryReachesLateAndReplacedSources()
+{
+    Scene scene;
+    Title* a = scene.AddTitle(MakeTitle("Alpha"));
+    scene.AddTitle(MakeTitle("Beta"));
+
+    // Settle: the directory is now unchanging, which is exactly the state that
+    // used to starve a newcomer.
+    scene.Tick(0.01f);
+    scene.Tick(0.01f);
+
+    auto lateOwned = std::make_unique<FakeSource>();
+    FakeSource* late = lateOwned.get();
+    const std::string lateId = scene.Pool().Add(std::move(lateOwned));
+    Check(late->directory.size() == 2,
+          "Directory: a source added after the titles gets the directory at Add()");
+    Check(!late->directory.empty() && late->directory[0].id == a->id,
+          "Directory: the late source's copy carries the real ids");
+
+    const int publishesAfterAdd = late->directoryPublishes;
+    for (int i = 0; i < 5; ++i) scene.Tick(0.01f);
+    Check(late->directoryPublishes == publishesAfterAdd,
+          "Directory: a source that is already current is not republished to");
+
+    // The Reload path: Add() over the same id replaces the source in place.
+    // The replacement is a different object and starts with nothing.
+    auto replacementOwned = std::make_unique<FakeSource>();
+    FakeSource* replacement = replacementOwned.get();
+    replacementOwned->SetId(lateId);
+    scene.Pool().Add(std::move(replacementOwned));
+    Check(replacement->directory.size() == 2,
+          "Directory: a source replaced under the same id (Reload) gets the directory too");
+
+    // And a change after all that still reaches it.
+    a->name = "Renamed";
+    scene.Tick(0.01f);
+    Check(replacement->directory.size() == 2 && replacement->directory[0].name == "Renamed",
+          "Directory: the replacement keeps receiving later changes");
 }
 
 // ── trigger_out dispatch ─────────────────────────────────────────────────
@@ -374,7 +489,9 @@ int main()
     TestAddTitleWiresAndDeduplicates();
     TestVisibleTitlePullsChangedData();
     TestTriggerInFetchesFreshAndRelays();
+    TestTriggerInWithSuppliedRecords();
     TestDirectoryPublishedOnChangeOnly();
+    TestDirectoryReachesLateAndReplacedSources();
     TestTriggerOutDispatch();
     TestRenderZOrder();
 

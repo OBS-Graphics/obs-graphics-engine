@@ -88,6 +88,19 @@ struct Title {
     // stale or blank data on first appearance would be worse) and applies
     // them instantly. No-op fetch when there's no pool or no dataSourceId.
     void TriggerIn(size_t recordIndex = 0, double duration = -1.0);
+
+    // Same, but applies records the caller already fetched instead of
+    // fetching. This is the form for a host whose Scene is serialized by a
+    // lock its render thread also needs: pull with DataPool::DataBlocking off
+    // that thread (DataBlocking takes no Scene lock — see data-pool.h), then
+    // call this under the lock. The overload above would re-fetch and hold the
+    // lock for the whole fetch, which for a network-backed ScriptDataSource is
+    // seconds of frozen rendering.
+    //
+    // Empty `records` means "the source genuinely returned nothing", not "go
+    // and fetch" — hence a separate overload rather than a defaulted argument.
+    void TriggerIn(size_t recordIndex, double duration, const std::vector<Record>& records);
+
     void TriggerOut();
 
     // Pulls the pool's cache for `dataSourceId` and applies it with the
@@ -118,6 +131,11 @@ struct Title {
 
 private:
     void RenderElements(cairo_t* ctx) const;
+
+    // Everything both TriggerIn overloads do once the data has been applied:
+    // the state transition and the notifications. Kept in one place so the two
+    // entry points can never drift on callback or relay ordering.
+    void EnterAnimatingIn(size_t recordIndex, double duration);
 
     // Version of the pool cache this title last applied; see
     // DataPool::DataIfChanged. 0 = nothing applied yet.

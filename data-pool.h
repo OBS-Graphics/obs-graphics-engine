@@ -113,9 +113,16 @@ public:
     void NotifyTriggerIn(const std::string& sourceId, const TitleRef& title, size_t recordIndex, double duration);
     void NotifyTriggerOut(const std::string& sourceId, const TitleRef& title);
 
-    // Pushes the Scene's Title directory into every registered source (see
-    // IDataSource::SetTitleDirectory). Called by Scene::Tick only when the
-    // directory actually changed.
+    // Publishes the Scene's Title directory into the sources (see
+    // IDataSource::SetTitleDirectory). Called by Scene::Tick every frame; the
+    // change detection lives here rather than in the caller because only this
+    // class knows which sources exist. A source is pushed to when *it* is
+    // behind the current directory, not merely when the directory just moved:
+    // a source registered after the last change — the Reload path, Add() over
+    // an existing id — would otherwise sit on an empty directory forever,
+    // silently breaking scene.find_titles/scene.titles for its script. An
+    // already-current frame costs one vector compare plus one integer compare
+    // per source.
     void PublishTitleDirectory(const std::vector<TitleRef>& titles);
 
     // Drains every source's pending script-originated trigger_out(...)
@@ -148,8 +155,17 @@ private:
         double updateTimer{0.0};
         double prevUpdateTimer{0.0};
         bool lastFetchFailed{false};
+        // Which m_directoryVersion this source was last handed. 0 = none yet,
+        // which is also what a freshly registered source starts at — that is
+        // what makes a late Add() catch up.
+        uint64_t publishedDirVersion{0};
     };
 
     mutable std::mutex m_mutex;
     std::unordered_map<std::string, Entry> m_sources;
+    // Last directory handed to PublishTitleDirectory, and a counter bumped
+    // only when it actually changed. Kept here (rather than in Scene) so a
+    // source that arrives later can be brought up to date on its own.
+    std::vector<TitleRef> m_titleDirectory;
+    uint64_t m_directoryVersion{0};
 };

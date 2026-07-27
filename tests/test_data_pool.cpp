@@ -87,7 +87,12 @@ struct RelaySpySource : IDataSource {
         lastDuration = dur;
     }
     void NotifyTriggerOut(const TitleRef& t) override { ++outCount; lastOut = t; }
-    void SetTitleDirectory(std::vector<TitleRef> titles) override { directory = std::move(titles); }
+    int directoryPublishes = 0;
+    void SetTitleDirectory(std::vector<TitleRef> titles) override
+    {
+        directory = std::move(titles);
+        ++directoryPublishes;
+    }
     std::vector<std::string> DrainOutTriggerRequests() override
     {
         auto out = std::move(pending);
@@ -347,6 +352,19 @@ void TestRelays()
     std::vector<TitleRef> directory{ref, TitleRef{"other-uuid", "Ticker"}};
     pool.PublishTitleDirectory(directory);
     Check(spy->directory == directory, "Relay: PublishTitleDirectory reaches every source verbatim");
+
+    // Scene::Tick calls this every frame, so the pool — not the caller — is
+    // what keeps an unchanged directory from being pushed over and over.
+    pool.PublishTitleDirectory(directory);
+    pool.PublishTitleDirectory(directory);
+    Check(spy->directoryPublishes == 1, "Relay: republishing an unchanged directory is a no-op per source");
+
+    // But a source that arrives afterwards is behind, and must be caught up
+    // even though the directory itself hasn't moved since.
+    auto lateOwned = std::make_unique<RelaySpySource>();
+    RelaySpySource* late = lateOwned.get();
+    pool.Add(std::move(lateOwned));
+    Check(late->directory == directory, "Relay: a source added later still receives the current directory");
 
     Check(pool.DrainOutTriggerRequests().empty(), "Drain: nothing pending yields an empty result");
 

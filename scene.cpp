@@ -66,17 +66,17 @@ void Scene::Tick(float dt)
     // (a) sources: pump + refresh caches on their own cadence.
     m_pool.Tick(dt);
 
-    // (b) title directory: only republish when it actually changed, so the
-    // common frame does one vector compare and nothing else.
-    std::vector<TitleRef> directory;
-    directory.reserve(m_titles.size());
+    // (b) title directory: handed over unconditionally. The "has this changed"
+    // question is the pool's to answer, because the honest question is "is
+    // THIS source behind", and only the pool knows which sources exist — a
+    // gate here couldn't see a source registered since the last change, and
+    // would leave it on an empty directory forever.
+    m_directoryScratch.clear();
+    m_directoryScratch.reserve(m_titles.size());
     for (const auto& t : m_titles)
-        directory.push_back(t->Ref());
+        m_directoryScratch.push_back(t->Ref());
 
-    if (directory != m_publishedDirectory) {
-        m_pool.PublishTitleDirectory(directory);
-        m_publishedDirectory = std::move(directory);
-    }
+    m_pool.PublishTitleDirectory(m_directoryScratch);
 
     // (c) script-originated trigger_out(...) requests.
     for (auto& [sourceId, requested] : m_pool.DrainOutTriggerRequests()) {
