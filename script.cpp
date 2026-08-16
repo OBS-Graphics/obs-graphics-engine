@@ -244,6 +244,14 @@ std::vector<Record> ScriptDataSource::GetData() const
 
 std::vector<Record> ScriptDataSource::GetDataBlocking() const
 {
+    // If the worker already gave up (bad path, Lua syntax error, etc.) it has
+    // exited for good — see WorkerMain's catch block — so no thread will ever
+    // drain a FetchRequest job or bump m_dataGeneration. Enqueueing one anyway
+    // would burn the full kInstantFetchTimeout on every call, forever. Return
+    // the (permanently empty) cache immediately instead.
+    if (m_loadFailed.load(std::memory_order_acquire))
+        return GetData();
+
     std::unique_lock<std::mutex> lock(m_dataMutex);
     uint64_t startGen = m_dataGeneration;
     lock.unlock();
