@@ -5,6 +5,7 @@
 
 #include "uuid.h"
 
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -44,6 +45,11 @@ struct IDataSource {
 
     virtual std::vector<Record> GetData() const = 0;
     virtual std::string GetFilePath() const = 0;
+
+    // Operator-facing label. Empty means "no label of its own" — the host names
+    // the source after GetFilePath() instead. Only a source with no file behind
+    // it needs to override this.
+    virtual std::string GetDisplayName() const { return {}; }
 
     // Like GetData(), but for sources that fetch asynchronously (e.g. a
     // worker-thread-backed ScriptDataSource), waits for a fresh fetch to
@@ -104,4 +110,54 @@ struct CsvFileDataSource : public IDataSource {
     {
         return filePath;
     }
+};
+
+// A source with no file behind it at all — its records are typed in (or
+// pasted) by an operator and held in memory. Everything else about it is
+// identical to the file sources from DataPool's point of view: it still
+// answers GetData() synchronously, still gets polled on the pool's cadence,
+// and still costs one snapshot copy per fetch.
+struct ManualDataSource : public IDataSource {
+    // Metadata for the host's editor UI only — the engine treats every cell
+    // as a string regardless of this tag. An "image" cell is just a
+    // filesystem path, handed to ImageElement::ApplyContent like any other
+    // image_path value; there is no engine-side image handling to look for.
+    enum class ColumnType { Text, Image };
+
+    struct Column {
+        std::string name;                 // the element id the value is applied to
+        ColumnType type{ColumnType::Text};
+    };
+
+    struct Table {
+        std::string name;                             // operator-facing label
+        std::vector<Column> columns;
+        std::vector<std::vector<std::string>> rows;   // rows[r][c]; short rows read as ""
+    };
+
+    ManualDataSource() = default;
+    explicit ManualDataSource(Table table);
+
+    std::vector<Record> GetData() const override;
+    std::string GetFilePath() const override { return {}; }
+    std::string GetDisplayName() const override;
+
+    Table GetTable() const;        // copy out, under m_mutex
+    void SetTable(Table table);    // swap in, under m_mutex
+
+private:
+    // DataPool::Tick calls GetData() on the host's render thread every 0.25s,
+    // completely independently of when the host UI thread calls SetTable() —
+    // there is no per-frame handshake between them, and there doesn't need to
+    // be one. The two file sources never had this problem because their state
+    // lives on disk, not in the object; ScriptDataSource has the same problem
+    // and solves it the same way, with its own m_dataMutex. DataPool's mutex
+    // (see the threading block atop data-pool.h) protects only the pool's own
+    // registry and caches — it says nothing about what a source keeps inside
+    // itself, so a source with mutable internal state is on its own for
+    // guarding it. This mutex is that guard: every read and write of m_table
+    // takes it, so an editor keystroke landing mid-GetData() can't hand back
+    // half an old row and half a new one.
+    mutable std::mutex m_mutex;
+    Table m_table;
 };

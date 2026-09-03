@@ -376,6 +376,84 @@ void TestRelays()
     Check(pool.DrainOutTriggerRequests().empty(), "Drain: a second drain is empty (the source was drained)");
 }
 
+// ── ManualDataSource ─────────────────────────────────────────────────────
+
+void TestManualDataSourceGetData()
+{
+    ManualDataSource::Table table;
+    table.columns = {{"name", ManualDataSource::ColumnType::Text}, {"logo", ManualDataSource::ColumnType::Image}};
+    table.rows = {
+        {"Alice", "@alice.png"},
+        {"Bob"},  // short row: missing "logo" cell
+    };
+    ManualDataSource src(table);
+
+    auto records = src.GetData();
+    Check(records.size() == 2, "ManualDataSource: one record per row");
+    Check(records[0].at("name") == "Alice" && records[0].at("logo") == "@alice.png",
+          "ManualDataSource: a full row reads back both cells");
+    Check(records[1].at("name") == "Bob" && records[1].at("logo") == "",
+          "ManualDataSource: a short row's missing trailing cell reads back as \"\"");
+}
+
+void TestManualDataSourceSkipsEmptyColumnName()
+{
+    ManualDataSource::Table table;
+    table.columns = {{"name", ManualDataSource::ColumnType::Text}, {"", ManualDataSource::ColumnType::Text}};
+    table.rows = {{"Alice", "unnamed"}};
+    ManualDataSource src(table);
+
+    auto records = src.GetData();
+    Check(records.size() == 1, "ManualDataSource: still one record for the one row");
+    Check(records[0].count("name") == 1 && records[0].at("name") == "Alice",
+          "ManualDataSource: the named column still comes through");
+    Check(records[0].count("") == 0, "ManualDataSource: an empty column name is skipped, not stored as a key");
+}
+
+void TestManualDataSourceInPool()
+{
+    ManualDataSource::Table table;
+    table.columns = {{"name", ManualDataSource::ColumnType::Text}};
+    table.rows = {{"Alice"}};
+
+    DataPool pool;
+    const std::string id = pool.Add(std::make_unique<ManualDataSource>(table));
+
+    Check(pool.DataVersion(id) == 1, "ManualDataSource+Pool: Add() primes the cache to version 1");
+    auto cached = pool.Data(id);
+    Check(!cached.empty() && cached[0].at("name") == "Alice",
+          "ManualDataSource+Pool: Data(id) sees the table's records immediately");
+}
+
+void TestManualDataSourceSetTableBumpsVersion()
+{
+    ManualDataSource::Table table;
+    table.columns = {{"name", ManualDataSource::ColumnType::Text}};
+    table.rows = {{"Alice"}};
+
+    DataPool pool;
+    auto srcOwned = std::make_unique<ManualDataSource>(table);
+    ManualDataSource* src = srcOwned.get();
+    const std::string id = pool.Add(std::move(srcOwned));
+    const uint64_t primed = pool.DataVersion(id);
+
+    ManualDataSource::Table changed = table;
+    changed.rows = {{"Bob"}};
+    src->SetTable(changed);
+    pool.Tick(kRefreshDt);
+    Check(pool.DataVersion(id) == primed + 1, "ManualDataSource+Pool: SetTable() with new content bumps the version");
+    Check(pool.Data(id)[0].at("name") == "Bob", "ManualDataSource+Pool: Data(id) reflects the new records");
+
+    // The pool's changed-flag contract: setting the SAME content again must
+    // not move the version, exactly as a re-fetch of an unchanged file source
+    // wouldn't.
+    const uint64_t afterChange = pool.DataVersion(id);
+    src->SetTable(changed);
+    pool.Tick(kRefreshDt);
+    Check(pool.DataVersion(id) == afterChange,
+          "ManualDataSource+Pool: SetTable() with identical content does NOT move the version");
+}
+
 }  // namespace
 
 int main()
@@ -390,6 +468,10 @@ int main()
     TestRemoveDoesNotBlockTick();
     TestClearDoesNotBlockTick();
     TestRelays();
+    TestManualDataSourceGetData();
+    TestManualDataSourceSkipsEmptyColumnName();
+    TestManualDataSourceInPool();
+    TestManualDataSourceSetTableBumpsVersion();
 
     if (g_failures == 0) {
         std::printf("\nAll checks passed.\n");
