@@ -112,6 +112,18 @@ struct Title {
 
     void TriggerOut();
 
+    // Points this title at a different source (empty = unbound). Use this
+    // rather than assigning `dataSourceId` directly: UpdateData() only
+    // applies records when the pool's cache version differs from
+    // m_lastDataVersion, and that counter carries over from whatever source
+    // was read before. A freshly registered source is primed to version 1,
+    // and a static file source sits at version 1 for the whole session — so
+    // a bare reassignment can leave a Visible title comparing 1 against 1,
+    // reading "unchanged", and rendering the previous source's record
+    // indefinitely. Resetting the counter to 0 (a version no live cache ever
+    // has) makes the next Visible tick pull the new source unconditionally.
+    void SetDataSource(const std::string& id);
+
     // Pulls the pool's cache for `dataSourceId` and applies it with the
     // animated SetContent, but only when that cache actually changed since
     // the last pull (DataPool versions each cache, so this is an integer

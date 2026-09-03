@@ -21,6 +21,8 @@
 //    bare "every title on this source" sentinel, deduplicated within one
 //    drain, and skipped for a title already Hidden/AnimatingOut.
 //  - Scene::Render draws non-Hidden titles in zOrder order.
+//  - SetDataSource re-points a Visible Title and applies the new source's
+//    records even when both caches sit at the same version.
 
 #include "element_rectangle.h"
 #include "element_text.h"
@@ -484,6 +486,52 @@ void TestRenderZOrder()
 
 }  // namespace
 
+// Rebinding a Visible Title to a different source must apply that source's
+// records, even when the two caches happen to share a version number.
+// UpdateData() compares the pool's cache version against m_lastDataVersion,
+// which carries over from whichever source was read before -- and a freshly
+// registered source is primed to version 1 while a source that never changes
+// sits at version 1 for the whole session. A bare `dataSourceId = id` could
+// therefore leave the title comparing 1 against 1, reading "unchanged", and
+// rendering the old source's record forever. Title::SetDataSource resets the
+// counter, which is the whole reason it exists.
+void TestRebindAppliesNewSourceData()
+{
+    Scene scene;
+
+    auto srcA = std::make_unique<FakeSource>();
+    srcA->value = "from A";
+    auto* rawA = srcA.get();
+    const std::string idA = scene.Pool().Add(std::move(srcA));
+
+    TextElement* el = nullptr;
+    Title* title = scene.AddTitle(MakeTitle("rebind", &el));
+    title->dataSourceId = idA;
+
+    title->TriggerIn();
+    RunUntilSettled(scene, *title);
+    Check(title->state == TitleState::Visible, "Rebind: title is Visible after TriggerIn");
+    Check(el->text == "from A", "Rebind: title shows source A's record");
+
+    // A never changes again, so its cache stays at the version the title
+    // recorded when it was triggered in -- exactly the collision above.
+    auto srcB = std::make_unique<FakeSource>();
+    srcB->value = "from B";
+    const std::string idB = scene.Pool().Add(std::move(srcB));
+    Check(scene.Pool().DataVersion(idA) == scene.Pool().DataVersion(idB),
+          "Rebind: both sources really are at the same cache version");
+    (void)rawA;
+
+    title->SetDataSource(idB);
+    scene.Tick(kRefreshDt);
+    Check(el->text == "from B", "Rebind: SetDataSource makes the next tick apply source B");
+
+    // Unbinding still works and stops any further pull.
+    title->SetDataSource("");
+    scene.Tick(kRefreshDt);
+    Check(el->text == "from B", "Rebind: unbinding leaves the last applied content alone");
+}
+
 int main()
 {
     TestAddTitleWiresAndDeduplicates();
@@ -494,6 +542,7 @@ int main()
     TestDirectoryReachesLateAndReplacedSources();
     TestTriggerOutDispatch();
     TestRenderZOrder();
+    TestRebindAppliesNewSourceData();
 
     if (g_failures == 0) {
         std::printf("\nAll checks passed.\n");

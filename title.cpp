@@ -205,6 +205,14 @@ void Title::TriggerOut()
         dataPool->NotifyTriggerOut(dataSourceId, Ref());
 }
 
+void Title::SetDataSource(const std::string& id)
+{
+    dataSourceId = id;
+    // See title.h: the version compare in UpdateData() is only meaningful
+    // against the source it was last taken from.
+    m_lastDataVersion = 0;
+}
+
 void Title::UpdateData()
 {
     if (!dataPool || dataSourceId.empty()) return;
