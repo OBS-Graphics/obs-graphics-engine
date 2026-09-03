@@ -70,6 +70,72 @@ Title::~Title()
     }
 }
 
+// Move every member explicitly (see title.h for why `= default` is wrong)
+// and take m_tempAssetDir with std::exchange so `other` is left holding an
+// empty string — the same "nothing to delete" sentinel the default
+// constructor and Save() already treat m_tempAssetDir as using. Without the
+// exchange, `other`'s destructor would delete the directory this Title now
+// owns.
+Title::Title(Title&& other) noexcept
+    : id(std::move(other.id))
+    , name(std::move(other.name))
+    , width(other.width)
+    , height(other.height)
+    , metadata(std::move(other.metadata))
+    , extra(std::move(other.extra))
+    , elements(std::move(other.elements))
+    , state(other.state)
+    , timer(other.timer)
+    , duration(other.duration)
+    , zOrder(other.zOrder)
+    , dataSourceId(std::move(other.dataSourceId))
+    , dataPool(other.dataPool)
+    , dataRecordIndex(other.dataRecordIndex)
+    , onTriggerIn(std::move(other.onTriggerIn))
+    , onTriggerOut(std::move(other.onTriggerOut))
+    , m_lastDataVersion(other.m_lastDataVersion)
+    , m_tempAssetDir(std::exchange(other.m_tempAssetDir, {}))
+    , m_thumbnail(std::move(other.m_thumbnail))
+    , m_loadDiagnostic(std::move(other.m_loadDiagnostic))
+{
+}
+
+Title& Title::operator=(Title&& other) noexcept
+{
+    if (this == &other) return *this;
+
+    // This Title is about to lose the only pointer to its own asset
+    // directory (the assignment below overwrites m_tempAssetDir), so remove
+    // it now rather than leaking it.
+    if (!m_tempAssetDir.empty()) {
+        std::error_code ec;
+        fs::remove_all(m_tempAssetDir, ec);
+    }
+
+    id                = std::move(other.id);
+    name              = std::move(other.name);
+    width             = other.width;
+    height            = other.height;
+    metadata          = std::move(other.metadata);
+    extra             = std::move(other.extra);
+    elements          = std::move(other.elements);
+    state             = other.state;
+    timer             = other.timer;
+    duration          = other.duration;
+    zOrder            = other.zOrder;
+    dataSourceId      = std::move(other.dataSourceId);
+    dataPool          = other.dataPool;
+    dataRecordIndex   = other.dataRecordIndex;
+    onTriggerIn       = std::move(other.onTriggerIn);
+    onTriggerOut      = std::move(other.onTriggerOut);
+    m_lastDataVersion = other.m_lastDataVersion;
+    m_tempAssetDir    = std::exchange(other.m_tempAssetDir, {});
+    m_thumbnail       = std::move(other.m_thumbnail);
+    m_loadDiagnostic  = std::move(other.m_loadDiagnostic);
+
+    return *this;
+}
+
 // ── Runtime API ───────────────────────────────────────────────────────────────
 
 VisualElement& Title::GetById(const std::string& id)
@@ -962,9 +1028,17 @@ Title Title::Load(const std::string& ogtPath)
         } else if (entry.rfind("ASSETS/", 0) == 0) {
             std::string baseName = entry.substr(7);
             if (tempDir.empty()) {
+                // The suffix must be unique PER LOAD, not derived from ogtPath. ~Title
+                // (see below) does fs::remove_all(m_tempAssetDir) on this exact directory,
+                // so if two Titles loaded from the same .ogt (or the same one loaded twice,
+                // e.g. a host's reload path loading the replacement before destroying the
+                // original) ever shared a directory, the first Title to be destroyed would
+                // delete the assets the other is still using. A uuid makes that collision
+                // impossible; the readable "ogt-<stem>-" prefix is kept only so a stray
+                // directory under the system temp dir can still be traced back to its file.
                 tempDir = (fs::temp_directory_path() /
                            ("ogt-" + fs::path(ogtPath).stem().string() + "-" +
-                            std::to_string(std::hash<std::string>{}(ogtPath) & 0xFFFF))).string();
+                            uuid::GenerateV4())).string();
                 fs::create_directories(tempDir);
             }
             std::string tempPath = tempDir + "/" + baseName;

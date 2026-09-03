@@ -77,6 +77,8 @@ IElement          (element.h)     — id, parent/child tree, virtual Render/Appl
 
 **`Title`** — Standalone presentation unit. Holds `id` (a generated uuid — see below), `name` (human-readable), `width`/`height`, `metadata` (arbitrary JSON), an elements vector (root at [0], VisualElements at [1..]), and a state machine: `Hidden → AnimatingIn → Visible → AnimatingOut → Hidden`. `Tick(dt)` advances the animation timer and, while Visible, pulls fresh data (below) and calls `TickData(dt)` on each VisualElement to drive per-element data-change animations. `Render(cr)` draws direct children of root sorted by `zOrder`. Loads/saves as `.ogt` (zip archive, see below).
 
+**Move semantics own the asset directory** — `Title` is move-only (copy is deleted). The move constructor and move assignment operator are user-defined, not `= default`: each Title's extracted-asset temp directory (see ".ogt file format" below) is deleted by `~Title`, so a defaulted move — which can leave the moved-from directory path as a copy rather than clearing it — would let the moved-from Title's destructor delete the directory the moved-to Title now depends on. The hand-written versions move every field and use `std::exchange` to clear the source's directory path (move assignment also deletes its *own* directory first, since it's about to lose the only pointer to it). `Title::Load` returns by value into `std::make_unique<Title>(Title::Load(...))`, so this move happens on every load.
+
 **Two identities** — `id` is a `uuid::GenerateV4()` value, unique within a `Scene` (`Scene::AddTitle` reassigns a duplicate, which happens when the same `.ogt` is opened twice since ids round-trip through the file) and is what a Lua script targets. `name` is the operator-facing name, free to collide — which is why `Scene::FindByName` returns a list. Pre-1.1 `.ogt` files stored the *name* in the `"id"` key; the schema migration moves it (see Schema versioning).
 
 **Data** — a `Title` reads at most one data source, named by `dataSourceId` (an `IDataSource::GetId()`) and read out of `dataPool` (set by `Scene::AddTitle`). It pulls; nothing pushes into it:
@@ -121,7 +123,7 @@ my_title.ogt  (ZIP)
 - `"@logo.png"` → `ASSETS/logo.png` inside the zip
 - Any other string → absolute or relative path on the local filesystem (not bundled)
 
-On `Title::Load`: bundled assets are extracted to a system temp directory for the life of the Title object. On `Title::~Title`: the temp directory is removed.
+On `Title::Load`: bundled assets are extracted to a system temp directory for the life of the Title object. The directory is unique to that Title *instance* (a `"ogt-<stem>-<uuid>"` name, one fresh uuid per Load call), not derived from the `.ogt` path — two Titles loaded from the same file, or the same file loaded twice, never share one. On `Title::~Title`: the temp directory is removed. Sharing a directory between instances would be a bug: a host that reloads a Title loads the replacement before destroying the original, and the original's destructor would delete assets the replacement is still using.
 
 On `Title::Save`: all referenced asset files (whether `@`-prefixed or local paths) are copied into `ASSETS/` and paths are rewritten as `@basename` in the JSON.
 

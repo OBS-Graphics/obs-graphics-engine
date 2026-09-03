@@ -75,8 +75,17 @@ struct Title {
     ~Title();
     Title(const Title&) = delete;
     Title& operator=(const Title&) = delete;
-    Title(Title&&) = default;
-    Title& operator=(Title&&) = default;
+    // User-defined, not `= default`. A defaulted move leaves the moved-from
+    // m_tempAssetDir in the standard's "valid but unspecified" state, and in
+    // practice (libstdc++'s small-string optimization, for a path short
+    // enough to fit inline) that state is a COPY of the string, not an empty
+    // one. ~Title deletes whatever m_tempAssetDir names, so a moved-from
+    // Title going out of scope would then delete the directory the moved-to
+    // Title just inherited. Title::Load returns by value into
+    // std::make_unique<Title>(Title::Load(...)), so this move happens on
+    // every load — see title.cpp for the definitions.
+    Title(Title&& other) noexcept;
+    Title& operator=(Title&& other) noexcept;
 
     IElement* GetRoot() const { return elements.empty() ? nullptr : elements[0].get(); }
 
